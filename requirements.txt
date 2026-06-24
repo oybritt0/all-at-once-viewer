@@ -1,8 +1,9 @@
 streamlit
-numpy
+plotly
+umap-learn
+scikit-learn
+matplotlib
 pandas
 pillow
-matplotlib
-scikit-learn
-umap-learn
-scipy
+numpy
+hdbscan
