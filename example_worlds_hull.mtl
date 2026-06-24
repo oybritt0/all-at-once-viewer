@@ -1,0 +1,7 @@
+newmtl core
+Kd 0.62 0.34 0.32
+illum 1
+
+newmtl phantom
+Kd 0.78 0.80 0.82
+illum 1
