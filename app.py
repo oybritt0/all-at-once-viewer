@@ -73,6 +73,10 @@ MANIFEST_PATH = PROJECT_ROOT / "data" / "catalog" / "manifest.json"
 EMBEDDINGS_DIR = PROJECT_ROOT / "data" / "embeddings"
 EXPORTS_DIR = PROJECT_ROOT / "data" / "exports" / "latent_svg"
 EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+# Offline figural geometry (silhouettes, inner contours, curve fragments)
+# written by extract_geometry.py. Optional: the viewer falls back to the
+# browser Sobel extraction for any image the sidecar doesn't cover.
+GEOMETRY_PATH = EMBEDDINGS_DIR / "content_geometry.json"
 RANDOM_STATE = 42
 
 SHAPE_CHOICES = ["circle", "square", "triangle", "diamond", "cross", "image"]
@@ -415,6 +419,17 @@ def get_thumbnail_b64(rel_path: str, max_edge: int):
     return base64.b64encode(buf.getvalue()).decode("ascii"), img.size
 
 
+@st.cache_data(show_spinner=False)
+def load_content_geometry(mtime: float):
+    """Load the extract_geometry.py sidecar. mtime keys the cache so a
+    re-extraction invalidates it without restarting streamlit."""
+    try:
+        with open(GEOMETRY_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("items", {})
+    except Exception:
+        return {}
+
+
 @st.cache_data(show_spinner="Computing KNN edges...")
 def compute_knn_edges(features_bytes: bytes, n: int, dim: int, k: int):
     """KNN edges. features_bytes makes the cache key stable."""
@@ -692,10 +707,6 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
     <button id="copy">Copy angles</button>
     <button id="reset">Reset</button>
   </div>
-  <div class="row" style="margin-top:4px;color:#999;font-size:10px;">
-    <button id="copyCam" title="Copy this exact camera (position, target, lens) as a string. Paste it into the constellation viewer's 'match worlds view' box to reproduce this perspective there, then export a PNG.">copy camera &rarr; constellation</button><br>
-    <input id="camOut" readonly placeholder="camera string appears here — select &amp; copy" style="width:210px;font-size:10px;background:#1a1a1a;color:#9fe3b5;border:1px solid #555;margin-top:3px;padding:1px 3px;">
-  </div>
   <div class="row" style="margin-top:6px;color:#999;font-size:10px;">
     sprite size: <input id="sizeRange" type="range" min="0.3" max="3.0" step="0.1" value="1.0" style="vertical-align:middle">
   </div>
@@ -762,6 +773,8 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
     <span id="worldsComplexityValue">1.00</span><br>
     worlds unify: <input id="worldsUnifyRange" type="range" min="0" max="1" step="0.02" value="0" style="width:80px">
     <span id="worldsUnifyValue">0.00</span> <span style="color:#666;">(boolean union → figures)</span><br>
+    worlds quote: <input id="worldsQuoteRange" type="range" min="0" max="1" step="0.02" value="0" style="width:80px">
+    <span id="worldsQuoteValue">0.00</span> <span style="color:#666;">(boundary from member curves)</span><br>
     articulation: <select id="articulationSignalSelect" style="width:140px">
       <option value="autoencoder">autoencoder (typical↔surprising)</option>
       <option value="vision">vision (edge density)</option>
@@ -769,6 +782,24 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
     <span style="color:#666;">— rectangle modes —</span><br>
     depth fade: <input id="lineworkFadeRange" type="range" min="0" max="0.9" step="0.05" value="0.5" style="width:80px">
     <span id="lineworkFadeValue">0.50</span>
+  </div>
+  <hr class="sep">
+  <div class="row" style="color:#999;font-size:11px;">
+    <b style="color:#ddd;">hallucinate</b> <span id="halluHealth" style="color:#666;">(worker offline)</span>
+  </div>
+  <div class="row" style="margin-top:4px;color:#999;font-size:10px;">
+    <button id="halluOnce">hallucinate this view</button>
+    <label style="margin-left:4px;"><input type="checkbox" id="halluAuto">auto on settle</label><br>
+    prompt +: <input id="halluExtra" type="text" placeholder="appended to neighborhood prompt"
+      style="width:160px;background:#1a1a1a;color:#ccc;border:1px solid #555;font-size:10px;padding:1px 3px;"><br>
+    <span id="halluPromptPreview" style="color:#555;display:block;max-width:215px;word-break:break-word;"></span>
+    <span style="color:#666;">&mdash; recorded path &mdash;</span><br>
+    <button id="halluRecord">record path</button>
+    <button id="halluQueuePath">queue path</button>
+    frames: <input id="halluFrames" type="number" min="8" max="600" value="96"
+      style="width:44px;background:#1a1a1a;color:#ccc;border:1px solid #555;font-size:10px;"><br>
+    <div id="halluStatus" style="color:#777;margin-top:2px;"></div>
+    <div id="halluStrip" style="display:flex;flex-wrap:wrap;gap:2px;margin-top:3px;max-width:220px;"></div>
   </div>
   <hr class="sep">
   <div class="row" style="color:#999;font-size:11px;">
@@ -821,6 +852,10 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
 
 const POINTS = __POINTS_JSON__;
+// Offline figural geometry sidecar (extract_geometry.py). Keys are point ids;
+// values carry sil / inner (closed, normalized) and frags (open curve
+// fragments with turning-angle descriptors). Empty object when absent.
+const GEOMETRY = __GEOMETRY_JSON__;
 const EDGES = __EDGES_JSON__;
 const SETTINGS = __SETTINGS_JSON__;
 
@@ -861,30 +896,7 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.enablePan = true;
 controls.screenSpacePanning = true;   // pan parallel to the screen (right-drag)
-controls.enableZoom = false;          // OrbitControls' wheel handler scales with raw deltaY, which
-                                      // trackpads fire in huge bursts. Replaced below with a fixed-
-                                      // step handler so each notch is a predictable percentage.
 controls.update();
-
-// Custom wheel zoom: fixed percentage step per event, clamped so the camera
-// can't blow past the near plane or get lost arbitrarily far away. Operates on
-// the offset vector (position - target) and rewrites position directly;
-// OrbitControls re-reads position from the scene each frame so this composes
-// cleanly with orbit/pan and with the FOV lens slider.
-const ZOOM_STEP = 0.06;
-const ZOOM_MIN = Math.max(0.02, radius * 0.05);
-const ZOOM_MAX = radius * 50;
-const _zoomOffset = new THREE.Vector3();
-renderer.domElement.addEventListener('wheel', (e) => {
-  e.preventDefault();
-  const sign = Math.sign(e.deltaY);
-  if (sign === 0) return;
-  const factor = sign > 0 ? (1 + ZOOM_STEP) : (1 - ZOOM_STEP);
-  _zoomOffset.copy(camera.position).sub(controls.target);
-  const newLen = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, _zoomOffset.length() * factor));
-  _zoomOffset.setLength(newLen);
-  camera.position.copy(controls.target).add(_zoomOffset);
-}, { passive: false });
 
 // Scene lighting. Sprites use unlit SpriteMaterial so they don't react to
 // these — only the marching-cubes enclosing volume (added later, on demand)
@@ -1078,6 +1090,7 @@ let lineworkStyle = 'segmentation';   // 'segmentation' | 'all' | 'ghosted' | 'o
 let lineworkFade = 0.5;
 let worldsComplexity = 1.0;   // 1 = dense field, lower = conjoin via chords
 let worldsUnify = 0.0;        // 0 = fragmented field, higher = boolean-union figures
+let worldsQuote = 0.0;        // fraction of union boundary rebuilt from member curve fragments
 let segSensitivity = 0.75;            // 0..1; higher = more detail (lower threshold)
 let segBlur = 1.4;                    // Gaussian sigma in pixels for pre-blur
 
@@ -1277,6 +1290,11 @@ document.getElementById('worldsUnifyRange').addEventListener('input', (e) => {
   document.getElementById('worldsUnifyValue').textContent = worldsUnify.toFixed(2);
   markOverlayDirty();
 });
+document.getElementById('worldsQuoteRange').addEventListener('input', (e) => {
+  worldsQuote = parseFloat(e.target.value);
+  document.getElementById('worldsQuoteValue').textContent = worldsQuote.toFixed(2);
+  markOverlayDirty();
+});
 document.getElementById('articulationSignalSelect').addEventListener('change', (e) => {
   ARTICULATION_SIGNAL = e.target.value;
   markOverlayDirty();
@@ -1388,45 +1406,6 @@ document.getElementById('copy').onclick = async () => {
     window.prompt('Copy these values into the sidebar sliders:', text);
   }
   setTimeout(() => { btn.textContent = original; }, 2000);
-};
-
-// Copy the full camera (position, target, lens/fov) as a compact JSON string,
-// to paste into the constellation viewer's "match worlds view" box. Both
-// viewers place points at the same raw UMAP coordinates and frame from the same
-// centroid, so position + target + fov reproduce this exact perspective there.
-document.getElementById('copyCam').onclick = async () => {
-  const cam = {
-    pos: [camera.position.x, camera.position.y, camera.position.z].map(v => +v.toFixed(5)),
-    tgt: [controls.target.x, controls.target.y, controls.target.z].map(v => +v.toFixed(5)),
-    fov: +camera.fov.toFixed(3),
-    w: Math.round(SETTINGS.width),
-    h: Math.round(SETTINGS.height),
-  };
-  const text = JSON.stringify(cam);
-  const out = document.getElementById('camOut');
-  if (out) { out.value = text; out.focus(); out.select(); }
-  const btn = document.getElementById('copyCam');
-  const original = btn.textContent;
-  let copied = false;
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-      copied = true;
-    }
-  } catch (e) { /* fall through to the readout box */ }
-  if (!copied) {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed'; ta.style.opacity = '0';
-      document.body.appendChild(ta); ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      copied = true;
-    } catch (e) { /* the readout box is still filled and selected */ }
-  }
-  btn.textContent = copied ? 'copied \u2014 paste in constellation' : 'select the box & copy';
-  setTimeout(() => { btn.textContent = original; }, 2400);
 };
 
 // ---------------------------------------------------------------------------
@@ -4118,6 +4097,205 @@ function worldsDepthWeight(depth, dr, base) {
   const g = Math.round(175 * t);             // black near → light grey far
   return { w: Math.max(0.18, base * wfac), stroke: `rgb(${g},${g},${g})` };
 }
+
+// =============================================================================
+// Sidecar geometry registration + curve quoting
+// =============================================================================
+// fragLib holds the open curve fragments extract_geometry.py traced from each
+// image — arches, profiles, sweeps — with turning-angle descriptors. The
+// quoting pass rebuilds a world's union boundary from the best-matching
+// fragments of that world's own members: the region ends up literally bounded
+// by quoted geometry from its corpus. Chord-logic — fragments join by
+// adjacency at segment endpoints, no interpolated skin.
+const fragLib = new Map();   // p.id -> [{pts, desc:Float32Array, c, t, k}]
+
+function registerSidecarGeometry(p) {
+  const g = (typeof GEOMETRY !== 'undefined' && GEOMETRY) ? GEOMETRY[p.id] : null;
+  if (!g) return false;
+  const polys = [];
+  if (g.sil) for (const s of g.sil) if (s && s.length >= 3) polys.push(s);
+  if (g.inner) for (const s of g.inner) if (s && s.length >= 3) polys.push(s);
+  if (polys.length) contentPolygons.set(p.id, polys);
+  if (g.frags && g.frags.length) {
+    const entries = [];
+    for (const f of g.frags) {
+      if (!f.p || f.p.length < 3 || !f.d) continue;
+      entries.push({ pts: f.p, desc: Float32Array.from(f.d), c: f.c || 1, t: f.t || 0, k: f.k || 'free' });
+    }
+    if (entries.length) fragLib.set(p.id, entries);
+  }
+  return polys.length > 0;
+}
+
+const QUOTE_DESC_N = 16;   // must match extract_geometry.py DESC_N
+
+function resampleOpenPts(pts, n) {
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++)
+    cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const total = cum[cum.length - 1];
+  const out = [];
+  if (total < 1e-9) { for (let i = 0; i < n; i++) out.push([pts[0][0], pts[0][1]]); return out; }
+  let j = 0;
+  for (let i = 0; i < n; i++) {
+    const t = total * i / (n - 1);
+    while (j < pts.length - 2 && cum[j + 1] < t) j++;
+    const u = (t - cum[j]) / Math.max(1e-9, cum[j + 1] - cum[j]);
+    out.push([pts[j][0] + (pts[j + 1][0] - pts[j][0]) * u,
+              pts[j][1] + (pts[j + 1][1] - pts[j][1]) * u]);
+  }
+  return out;
+}
+
+function resampleClosedPts(pts, n) {
+  const closed = pts.slice(); closed.push(pts[0]);
+  return resampleOpenPts(closed, n + 1).slice(0, n);
+}
+
+function turningDescOf(pts) {
+  const rs = resampleOpenPts(pts, QUOTE_DESC_N + 2);
+  const d = new Float32Array(QUOTE_DESC_N);
+  let prev = Math.atan2(rs[1][1] - rs[0][1], rs[1][0] - rs[0][0]);
+  for (let i = 1; i <= QUOTE_DESC_N; i++) {
+    const a = Math.atan2(rs[i + 1][1] - rs[i][1], rs[i + 1][0] - rs[i][0]);
+    let t = a - prev;
+    while (t > Math.PI) t -= 2 * Math.PI;
+    while (t < -Math.PI) t += 2 * Math.PI;
+    d[i - 1] = t; prev = a;
+  }
+  return d;
+}
+
+function descDistance(a, b, reversed) {
+  // traversing a curve backwards reverses and negates its turning sequence
+  let s = 0;
+  for (let i = 0; i < QUOTE_DESC_N; i++) {
+    const bv = reversed ? -b[QUOTE_DESC_N - 1 - i] : b[i];
+    s += Math.abs(a[i] - bv);
+  }
+  return s / QUOTE_DESC_N;
+}
+
+// Per-world candidate pools, cached until clustering or the library changes.
+let quoteCandCache = { key: '', map: null };
+function quoteCandidatesByLab(labels) {
+  const key = labels.length + ':' + fragLib.size + ':' + worldsParams().K;
+  if (quoteCandCache.key === key && quoteCandCache.map) return quoteCandCache.map;
+  const map = new Map();
+  for (let i = 0; i < POINTS.length; i++) {
+    const entries = fragLib.get(POINTS[i].id);
+    if (!entries) continue;
+    const lab = labels[i];
+    if (!map.has(lab)) map.set(lab, []);
+    const arr = map.get(lab);
+    for (const e of entries) arr.push(e);
+  }
+  // cap pool size so per-frame matching stays cheap
+  for (const [lab, arr] of map) {
+    if (arr.length > 360) {
+      const step = arr.length / 360;
+      const sub = [];
+      for (let i = 0; i < 360; i++) sub.push(arr[Math.floor(i * step)]);
+      map.set(lab, sub);
+    }
+  }
+  quoteCandCache = { key, map };
+  return map;
+}
+
+// Similarity-transform a fragment so its endpoints land on (a, b). Rejects
+// fragments whose transformed sweep deviates wildly from the chord — those
+// would fold the boundary back over itself.
+function transformFragmentTo(cand, rev, a, b) {
+  let f = cand.pts;
+  if (rev) f = f.slice().reverse();
+  const f0 = f[0], f1 = f[f.length - 1];
+  const fdx = f1[0] - f0[0], fdy = f1[1] - f0[1];
+  const flen = Math.hypot(fdx, fdy);
+  if (flen < 1e-6) return null;
+  const sdx = b[0] - a[0], sdy = b[1] - a[1];
+  const slen = Math.hypot(sdx, sdy);
+  if (slen < 1e-6) return null;
+  const scale = slen / flen;
+  const cos = (fdx * sdx + fdy * sdy) / (flen * slen);
+  const sin = (fdx * sdy - fdy * sdx) / (flen * slen);
+  const out = new Array(f.length);
+  let maxDev = 0;
+  for (let i = 0; i < f.length; i++) {
+    const x = (f[i][0] - f0[0]) * scale, y = (f[i][1] - f0[1]) * scale;
+    const px = a[0] + x * cos - y * sin;
+    const py = a[1] + x * sin + y * cos;
+    out[i] = [px, py];
+    const dev = Math.abs((px - a[0]) * (-sdy / slen) + (py - a[1]) * (sdx / slen));
+    if (dev > maxDev) maxDev = dev;
+  }
+  if (maxDev > slen * 0.85) return null;
+  return out;
+}
+
+// Rebuild one closed contour from quoted member fragments. The boundary is
+// resampled into segments of readable scale; each segment's turning
+// signature retrieves its best-matching fragment (either traversal
+// direction); the top worldsQuote fraction of matches replaces the original
+// runs, endpoints preserved so the ring stays closed.
+function quoteContour(contour, candidates, minDim) {
+  if (!candidates || !candidates.length || contour.length < 6 || worldsQuote <= 0.001)
+    return contour;
+  let per = 0;
+  for (let i = 0; i < contour.length; i++) {
+    const a = contour[i], b = contour[(i + 1) % contour.length];
+    per += Math.hypot(b[0] - a[0], b[1] - a[1]);
+  }
+  if (per < minDim * 0.12) return contour;   // too small to quote legibly
+  const segLen = Math.max(minDim * 0.06, per / 28);
+  const nSeg = Math.max(4, Math.min(48, Math.round(per / segLen)));
+  const SPS = 9;
+  const ring = resampleClosedPts(contour, nSeg * SPS);
+  const segs = [];
+  for (let s = 0; s < nSeg; s++) {
+    const seg = [];
+    for (let k = 0; k <= SPS; k++) seg.push(ring[(s * SPS + k) % ring.length]);
+    segs.push(seg);
+  }
+  const matches = new Array(nSeg).fill(null);
+  for (let s = 0; s < nSeg; s++) {
+    const seg = segs[s];
+    const chord = Math.hypot(seg[SPS][0] - seg[0][0], seg[SPS][1] - seg[0][1]);
+    if (chord < minDim * 0.015) continue;
+    const desc = turningDescOf(seg);
+    let segArc = 0;
+    for (let k = 0; k < SPS; k++)
+      segArc += Math.hypot(seg[k + 1][0] - seg[k][0], seg[k + 1][1] - seg[k][1]);
+    const segRatio = segArc / Math.max(1e-9, chord);
+    let best = null, bestD = Infinity, bestRev = false;
+    for (const cand of candidates) {
+      const d0 = descDistance(desc, cand.desc, false);
+      const d1 = descDistance(desc, cand.desc, true);
+      // chord-ratio term: penalize sweeps disproportionate to the segment,
+      // so flat runs prefer near-flat fragments and deep arcs prefer arcs
+      const d = Math.min(d0, d1) + 0.3 * Math.abs(segRatio - cand.c);
+      if (d < bestD) { bestD = d; best = cand; bestRev = d1 < d0; }
+    }
+    if (best && bestD < 0.45) matches[s] = { s, cand: best, rev: bestRev, d: bestD };
+  }
+  const ranked = matches.filter(m => m).sort((a, b) => a.d - b.d);
+  const nQuote = Math.round(worldsQuote * ranked.length);
+  const take = new Set();
+  for (let i = 0; i < nQuote; i++) take.add(ranked[i].s);
+  const out = [];
+  for (let s = 0; s < nSeg; s++) {
+    const seg = segs[s];
+    let pts = seg;
+    const m = matches[s];
+    if (m && take.has(s)) {
+      const q = transformFragmentTo(m.cand, m.rev, seg[0], seg[SPS]);
+      if (q) pts = q;
+    }
+    for (let k = 0; k < pts.length - 1; k++) out.push(pts[k]);
+  }
+  return out.length >= 3 ? out : contour;
+}
+
 function computeWorlds(W, H) {
   const wp = worldsParams();
   const labels = worldClusterLabels(wp.K);
@@ -4203,6 +4381,17 @@ function computeWorlds(W, H) {
       }
     }
     unions.sort((a, b) => b.depth - a.depth);   // far first (painter's algorithm)
+    // Curve quoting: rebuild each union boundary from best-matching member
+    // fragments. The world's region is then bounded by geometry quoted from
+    // its own members rather than by a traced hull.
+    if (worldsQuote > 0.001 && fragLib.size > 0) {
+      const candByLab = quoteCandidatesByLab(labels);
+      for (const u of unions) {
+        const cands = candByLab.get(u.lab);
+        if (!cands || !cands.length) continue;
+        u.contours = u.contours.map(c => quoteContour(c, cands, minDim));
+      }
+    }
   }
 
   // Within-world chord bridges. As complexity drops, members of the SAME world
@@ -4487,7 +4676,11 @@ function precomputeAllEdgeMaps() {
         if (edgeCanvas) edgeMaps.set(p.id, edgeCanvas);
         edgeComplexity.set(p.id, complexity);
         complexityRankCache = null;   // rank rebuilds on next worlds render
-        if (polys && polys.length > 0) {
+        // Sidecar geometry wins over the browser Sobel polygons when present:
+        // figural silhouettes and learned-edge contours instead of gradient
+        // isolines. Fragments register into fragLib for the quoting pass.
+        const usedSidecar = registerSidecarGeometry(p);
+        if (!usedSidecar && polys && polys.length > 0) {
           contentPolygons.set(p.id, polys);
           polyTotal += polys.length;
         }
@@ -5119,6 +5312,233 @@ document.getElementById('exportVolumeObj').addEventListener('click', () => {
   }, 10);
 });
 
+// =============================================================================
+// Hallucination bridge
+// =============================================================================
+// Talks to diffusion_worker.py (SDXL + MistoLine + custom LoRA) on localhost.
+// The current worlds/linework frame is the ControlNet conditioning image; the
+// prompt is assembled from the latent neighborhood around the orbit target —
+// the k nearest members' periods and media, distance-weighted. Navigating the
+// space therefore navigates the prompt: the model hallucinates the vibe of
+// wherever the camera currently sits, conditioned on its projected linework.
+// Single jobs return to the strip below; recorded paths queue as batches the
+// worker writes to data/hallucinations/<tag>/ for assemble_video.py.
+const WORKER_URL = 'http://127.0.0.1:8787';
+let workerOnline = false;
+
+function setHalluStatus(s) {
+  const el = document.getElementById('halluStatus');
+  if (el) el.textContent = s;
+}
+
+async function halluPing() {
+  try {
+    const r = await fetch(WORKER_URL + '/health', { signal: AbortSignal.timeout ? AbortSignal.timeout(2500) : undefined });
+    workerOnline = r.ok;
+  } catch (e) { workerOnline = false; }
+  const el = document.getElementById('halluHealth');
+  if (el) el.textContent = workerOnline ? '(worker online)' : '(worker offline)';
+}
+halluPing();
+setInterval(halluPing, 8000);
+
+function halluNeighborhoodPrompt() {
+  const t = controls.target;
+  const scored = [];
+  for (const p of POINTS) {
+    scored.push([Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z), p]);
+  }
+  scored.sort((a, b) => a[0] - b[0]);
+  const k = Math.min(10, scored.length);
+  const eras = new Map(), cats = new Map();
+  const bump = (m, key, amt) => {
+    if (!key || key === 'unknown' || key === '') return;
+    m.set(key, (m.get(key) || 0) + amt);
+  };
+  for (let i = 0; i < k; i++) {
+    const wgt = 1 / (1 + scored[i][0]);
+    bump(eras, scored[i][1].era, wgt);
+    bump(cats, scored[i][1].cat, wgt);
+  }
+  const clean = (s) => s.replace(/^[0-9]+_/, '').replace(/_/g, ' ');
+  const top = (m, n) => [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(e => clean(e[0]));
+  let prompt = 'semi-abstract painterly iconic figures materializing from mist, faceless cartoon figures';
+  const eraStr = top(eras, 3).join(', ');
+  const catStr = top(cats, 2).join(', ');
+  if (eraStr) prompt += ', in the manner of ' + eraStr;
+  if (catStr) prompt += ', ' + catStr;
+  prompt += ', earth tone palette with jewel accents';
+  const extraEl = document.getElementById('halluExtra');
+  if (extraEl && extraEl.value.trim()) prompt += ', ' + extraEl.value.trim();
+  return prompt;
+}
+
+function halluCaptureFrame(maxEdge) {
+  const w = W(), h = H();
+  const s = Math.min(1, maxEdge / Math.max(w, h));
+  const cw = Math.max(8, Math.round(w * s)), ch = Math.max(8, Math.round(h * s));
+  const c = document.createElement('canvas');
+  c.width = cw; c.height = ch;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, cw, ch);
+  if (currentMode !== 'linework') {
+    try {
+      renderer.render(scene, camera);
+      ctx.drawImage(renderer.domElement, 0, 0, cw, ch);
+    } catch (e) {}
+  }
+  ctx.drawImage(overlayCanvas, 0, 0, cw, ch);
+  return c.toDataURL('image/png');
+}
+
+const halluPending = new Set();
+
+async function halluSubmit(tag, frame) {
+  if (!workerOnline) {
+    setHalluStatus('worker offline \u2014 start diffusion_worker.py');
+    return null;
+  }
+  const prompt = halluNeighborhoodPrompt();
+  const pv = document.getElementById('halluPromptPreview');
+  if (pv) pv.textContent = prompt;
+  const body = {
+    image_b64: halluCaptureFrame(1024),
+    prompt: prompt,
+    tag: tag || '',
+    frame: (frame == null ? -1 : frame),
+  };
+  try {
+    const r = await fetch(WORKER_URL + '/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!tag) halluPoll(j.id);
+    return j.id;
+  } catch (e) {
+    setHalluStatus('submit failed: ' + e);
+    return null;
+  }
+}
+
+async function halluPoll(id) {
+  halluPending.add(id);
+  const tick = async () => {
+    if (!halluPending.has(id)) return;
+    try {
+      const r = await fetch(WORKER_URL + '/jobs/' + id);
+      const j = await r.json();
+      if (j.status === 'done') {
+        halluPending.delete(id);
+        setHalluStatus('');
+        const img = document.createElement('img');
+        img.src = 'data:image/png;base64,' + j.image_b64;
+        img.style.width = '68px';
+        img.style.cursor = 'pointer';
+        img.title = (j.path || '') + ' \u2014 click to open';
+        img.onclick = () => {
+          const w2 = window.open();
+          if (w2) w2.document.write('<img src="' + img.src + '" style="max-width:100%">');
+        };
+        const strip = document.getElementById('halluStrip');
+        if (strip) strip.prepend(img);
+        return;
+      }
+      if (j.status === 'error') {
+        halluPending.delete(id);
+        setHalluStatus('error: ' + (j.error || ''));
+        return;
+      }
+      setHalluStatus(j.status + (j.queued ? ' (' + j.queued + ' queued)' : '') + '\u2026');
+    } catch (e) {}
+    setTimeout(tick, 2500);
+  };
+  tick();
+}
+
+document.getElementById('halluOnce').addEventListener('click', () => halluSubmit());
+
+// auto on settle: one hallucination each time the camera comes to rest
+let halluAutoTimer = null;
+controls.addEventListener('end', () => {
+  const cb = document.getElementById('halluAuto');
+  if (!cb || !cb.checked) return;
+  if (halluAutoTimer) clearTimeout(halluAutoTimer);
+  halluAutoTimer = setTimeout(() => {
+    if (halluPending.size === 0) halluSubmit();
+  }, 1200);
+});
+
+// ---- recorded camera paths --------------------------------------------------
+let halluRecording = false;
+let halluPath = [];
+let halluLastSample = 0;
+
+controls.addEventListener('change', () => {
+  if (!halluRecording) return;
+  const now = performance.now();
+  if (now - halluLastSample < 90) return;
+  halluLastSample = now;
+  halluPath.push({
+    p: camera.position.toArray(),
+    t: controls.target.toArray(),
+    fov: camera.fov,
+    ts: now,
+  });
+});
+
+document.getElementById('halluRecord').addEventListener('click', (e) => {
+  halluRecording = !halluRecording;
+  if (halluRecording) {
+    halluPath = [];
+    e.target.textContent = 'stop recording';
+    setHalluStatus('recording camera path\u2026 navigate the space');
+  } else {
+    e.target.textContent = 'record path';
+    setHalluStatus('recorded ' + halluPath.length + ' keys');
+  }
+});
+
+document.getElementById('halluQueuePath').addEventListener('click', async () => {
+  if (halluRecording) { setHalluStatus('stop recording first'); return; }
+  if (halluPath.length < 2) { setHalluStatus('record a path first'); return; }
+  if (!workerOnline) { setHalluStatus('worker offline \u2014 start diffusion_worker.py'); return; }
+  const framesEl = document.getElementById('halluFrames');
+  const F = Math.max(8, Math.min(600, parseInt(framesEl.value || '96', 10)));
+  const tag = 'path_' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const t0 = halluPath[0].ts, t1 = halluPath[halluPath.length - 1].ts;
+  const savedP = camera.position.clone();
+  const savedT = controls.target.clone();
+  const savedFov = camera.fov;
+  const lerp = (a, b, u) => a + (b - a) * u;
+  for (let f = 0; f < F; f++) {
+    const tt = t0 + (t1 - t0) * (F === 1 ? 0 : f / (F - 1));
+    let i = 0;
+    while (i < halluPath.length - 2 && halluPath[i + 1].ts < tt) i++;
+    const a = halluPath[i], b = halluPath[i + 1];
+    const u = Math.max(0, Math.min(1, (tt - a.ts) / Math.max(1e-6, b.ts - a.ts)));
+    camera.position.set(lerp(a.p[0], b.p[0], u), lerp(a.p[1], b.p[1], u), lerp(a.p[2], b.p[2], u));
+    controls.target.set(lerp(a.t[0], b.t[0], u), lerp(a.t[1], b.t[1], u), lerp(a.t[2], b.t[2], u));
+    camera.fov = lerp(a.fov, b.fov, u);
+    camera.updateProjectionMatrix();
+    controls.update();
+    redrawOverlay();
+    await halluSubmit(tag, f);
+    setHalluStatus('queued frame ' + (f + 1) + '/' + F + ' \u2192 ' + tag);
+    await new Promise(res => setTimeout(res, 120));
+  }
+  camera.position.copy(savedP);
+  controls.target.copy(savedT);
+  camera.fov = savedFov;
+  camera.updateProjectionMatrix();
+  controls.update();
+  redrawOverlay();
+  setHalluStatus('batch ' + tag + ' queued (' + F + ' frames). assemble: python assemble_video.py --tag ' + tag);
+});
+
+
 </script>
 </body>
 </html>
@@ -5532,8 +5952,18 @@ with st.expander("Fluid 3D navigation (with image markers)", expanded=True):
         "umap_params": st.session_state.get("umap_params", dict(UMAP_DEFAULTS)),
     }
 
+    # Sidecar geometry, filtered to the sprites actually in this view so the
+    # embedded payload stays bounded.
+    geometry_data = {}
+    if GEOMETRY_PATH.exists():
+        _geo = load_content_geometry(GEOMETRY_PATH.stat().st_mtime)
+        if _geo:
+            _ids = {sp["id"] for sp in sprites_data}
+            geometry_data = {k: v for k, v in _geo.items() if k in _ids}
+
     threejs_html = (
         THREEJS_TEMPLATE
+        .replace("__GEOMETRY_JSON__", json.dumps(geometry_data))
         .replace("__POINTS_JSON__", json.dumps(sprites_data))
         .replace("__EDGES_JSON__", json.dumps(edges_data))
         .replace("__SETTINGS_JSON__", json.dumps(export_settings))
