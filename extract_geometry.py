@@ -1,3 +1,31 @@
+<<<<<<< HEAD
+r"""
+extract_geometry.py — figural geometry sidecar for the latent viewer.
+
+Regenerates data/embeddings/content_geometry.json keyed by the CURRENT manifest
+ids, so the worlds silhouettes and the quote system work again after a re-embed
+(a re-embed regenerates every id, orphaning any previous sidecar).
+
+Per canonical image it writes:
+  sil    — outer figure silhouette polygon(s), [0,1]-relative, from a
+           border-flood figure/ground segmentation (background grown inward
+           from the frame edge across low-gradient, border-coloured pixels).
+  inner  — a few strong interior contours (rooflines, profiles, mullions),
+           [0,1]-relative, from gradient isolines within the figure.
+  frags  — open curve fragments cut from sil+inner at high-curvature corners,
+           each with a 16-bin turning-angle descriptor. This is the quote
+           library: worlds boundaries get rebuilt from these fragments.
+
+Schema (matches app.py exactly):
+  { "items": { "<id>": { "sil": [[[x,y],...]], "inner": [...], "frags":
+      [ { "p": [[x,y],...], "d": [16 floats], "c": int, "t": 0, "k": "free" } ] } } }
+  All coordinates are image-relative in [0,1]. DESC_N must equal the viewer's
+  QUOTE_DESC_N (16).
+
+Run from the project root:
+    python extract_geometry.py
+    python extract_geometry.py --limit 50      # quick sample
+=======
 """
 extract_geometry.py — offline figural geometry extraction for the latent viewer.
 
@@ -41,12 +69,417 @@ Usage (from project root, same place you run streamlit):
 
 Re-run any time the corpus changes; the viewer picks the sidecar up on next
 reload and falls back to the browser Sobel path for any id it doesn't cover.
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 """
 from __future__ import annotations
 
 import argparse
 import json
 import math
+<<<<<<< HEAD
+import os
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageFilter
+
+Image.MAX_IMAGE_PIXELS = None
+
+# --- config ------------------------------------------------------------------
+PROJECT_ROOT = Path(r"C:\Users\rbritain\Documents\All At Once\Histories")
+MANIFEST_PATH = PROJECT_ROOT / "data" / "catalog" / "manifest.json"
+INDEX_PATH = PROJECT_ROOT / "data" / "embeddings" / "index.json"
+OUT_PATH = PROJECT_ROOT / "data" / "embeddings" / "content_geometry.json"
+
+WORK = 256           # analysis resolution (long edge); silhouettes are relative
+DESC_N = 16          # MUST equal app.py QUOTE_DESC_N
+GRAD_TOL_FRAC = 0.22  # flood crosses pixels with gradient below this * maxGrad
+COLOR_TOL = 70       # and within this L1 colour distance of the border palette
+MAX_SIL = 2
+MAX_INNER = 4
+MAX_FRAGS = 10
+CORNER_ANGLE = 0.9   # radians; split a contour into fragments at sharper turns
+MIN_FRAG_PTS = 5
+# -----------------------------------------------------------------------------
+
+
+def long(p) -> str:
+    s = os.path.abspath(str(p))
+    if os.name == "nt" and not s.startswith("\\\\?\\"):
+        return "\\\\?\\" + s
+    return s
+
+
+def resolve_path(p: str) -> Path:
+    return PROJECT_ROOT / p
+
+
+def load_rgb_small(path):
+    im = Image.open(long(path))
+    try:
+        im.draft("RGB", (WORK * 2, WORK * 2))
+    except Exception:
+        pass
+    im = im.convert("RGB")
+    im.thumbnail((WORK, WORK), Image.BILINEAR)
+    return im
+
+
+def sobel_mag(gray: np.ndarray) -> np.ndarray:
+    gx = np.zeros_like(gray)
+    gy = np.zeros_like(gray)
+    gx[:, 1:-1] = gray[:, 2:] - gray[:, :-2]
+    gy[1:-1, :] = gray[2:, :] - gray[:-2, :]
+    return np.hypot(gx, gy)
+
+
+def marching_squares(field: np.ndarray, level: float):
+    """Minimal marching squares -> list of open/closed point paths (px coords)."""
+    h, w = field.shape
+    segs = []
+    f = field
+    for y in range(h - 1):
+        for x in range(w - 1):
+            tl = f[y, x] >= level
+            tr = f[y, x + 1] >= level
+            br = f[y + 1, x + 1] >= level
+            bl = f[y + 1, x] >= level
+            idx = (tl << 3) | (tr << 2) | (br << 1) | bl
+            if idx == 0 or idx == 15:
+                continue
+
+            def ip(ax, ay, bx, by):
+                fa, fb = f[ay, ax], f[by, bx]
+                t = 0.5 if abs(fb - fa) < 1e-9 else (level - fa) / (fb - fa)
+                return (ax + (bx - ax) * t, ay + (by - ay) * t)
+
+            top = ip(x, y, x + 1, y)
+            rgt = ip(x + 1, y, x + 1, y + 1)
+            bot = ip(x, y + 1, x + 1, y + 1)
+            lft = ip(x, y, x, y + 1)
+            table = {
+                1: [(lft, bot)], 2: [(bot, rgt)], 3: [(lft, rgt)],
+                4: [(top, rgt)], 5: [(lft, top), (bot, rgt)], 6: [(top, bot)],
+                7: [(lft, top)], 8: [(top, lft)], 9: [(top, bot)],
+                10: [(top, rgt), (lft, bot)], 11: [(top, rgt)],
+                12: [(rgt, lft)], 13: [(bot, rgt)], 14: [(lft, bot)],
+            }
+            for a, b in table.get(idx, []):
+                segs.append((a, b))
+    return stitch(segs)
+
+
+def stitch(segs, tol=0.9):
+    paths = []
+    used = [False] * len(segs)
+    key = lambda p: (round(p[0] / tol), round(p[1] / tol))
+    start_map = {}
+    for i, (a, b) in enumerate(segs):
+        start_map.setdefault(key(a), []).append((i, False))
+        start_map.setdefault(key(b), []).append((i, True))
+    for i in range(len(segs)):
+        if used[i]:
+            continue
+        used[i] = True
+        a, b = segs[i]
+        path = [a, b]
+        # extend forward
+        while True:
+            k = key(path[-1])
+            nxt = None
+            for j, rev in start_map.get(k, []):
+                if not used[j]:
+                    nxt = (j, rev)
+                    break
+            if nxt is None:
+                break
+            j, rev = nxt
+            used[j] = True
+            sa, sb = segs[j]
+            path.append(sa if rev else sb)
+        if len(path) >= 3:
+            paths.append(path)
+    return paths
+
+
+def poly_area_frac(pts, w, h):
+    a = 0.0
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        a += x1 * y2 - x2 * y1
+    return abs(a / 2) / (w * h)
+
+
+def border_flood_silhouette(im: Image.Image):
+    arr = np.asarray(im, dtype=np.float32)
+    h, w, _ = arr.shape
+    gray = arr @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    blur = np.asarray(im.convert("L").filter(ImageFilter.GaussianBlur(1.2)),
+                      dtype=np.float32)
+    grad = sobel_mag(blur)
+    gmax = float(grad.max()) or 1.0
+    grad_tol = gmax * GRAD_TOL_FRAC
+
+    ring = np.concatenate([
+        arr[:2, :, :].reshape(-1, 3), arr[-2:, :, :].reshape(-1, 3),
+        arr[:, :2, :].reshape(-1, 3), arr[:, -2:, :].reshape(-1, 3)])
+    med = np.median(ring, axis=0)
+    coldist = np.abs(arr - med).sum(axis=2)
+
+    bg = np.zeros((h, w), dtype=bool)
+    from collections import deque
+    q = deque()
+    for x in range(w):
+        for y in (0, h - 1):
+            if coldist[y, x] < COLOR_TOL * 1.4:
+                bg[y, x] = True
+                q.append((y, x))
+    for y in range(h):
+        for x in (0, w - 1):
+            if not bg[y, x] and coldist[y, x] < COLOR_TOL * 1.4:
+                bg[y, x] = True
+                q.append((y, x))
+    while q:
+        y, x = q.popleft()
+        for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < h and 0 <= nx < w and not bg[ny, nx]:
+                if grad[ny, nx] < grad_tol and coldist[ny, nx] < COLOR_TOL:
+                    bg[ny, nx] = True
+                    q.append((ny, nx))
+
+    fig = (~bg).astype(np.float32)
+    frac = float(fig.mean())
+    if frac < 0.02 or frac > 0.96:
+        return [], grad, gmax
+    fig_img = Image.fromarray((fig * 255).astype(np.uint8)).filter(
+        ImageFilter.GaussianBlur(1.4))
+    fig = np.asarray(fig_img, dtype=np.float32) / 255.0
+
+    paths = marching_squares(fig, 0.5)
+    sils = []
+    for pts in paths:
+        if len(pts) < 8:
+            continue
+        if poly_area_frac(pts, w, h) < 0.015:
+            continue
+        sils.append(simplify_any(pts, 0.8))
+    sils.sort(key=lambda p: -poly_area_frac(p, w, h))
+    rel = [[[float(x) / w, float(y) / h] for (x, y) in s] for s in sils[:MAX_SIL]]
+    return rel, grad, gmax
+
+
+def inner_contours(grad, gmax, w, h):
+    level = 0.30 * gmax
+    if level <= 0:
+        return []
+    paths = marching_squares(grad, level)
+    margin = max(3, int(min(w, h) * 0.07))
+    out = []
+    for pts in paths:
+        if len(pts) < 6:
+            continue
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        spanx = (max(xs) - min(xs)) / w
+        spany = (max(ys) - min(ys)) / h
+        nb = sum(1 for (x, y) in pts
+                 if x <= margin or x >= w - margin or y <= margin or y >= h - margin)
+        if spanx > 0.85 and spany > 0.85 and nb / len(pts) > 0.6:
+            continue
+        sp = simplify_any(pts, 0.8)
+        if len(sp) < 3:
+            continue
+        out.append(((max(xs) - min(xs)) + (max(ys) - min(ys)),
+                    [[float(x) / w, float(y) / h] for (x, y) in sp]))
+    out.sort(key=lambda o: -o[0])
+    return [o[1] for o in out[:MAX_INNER]]
+
+
+def simplify(pts, eps):
+    """Ramer-Douglas-Peucker on a polyline of (x,y)."""
+    if len(pts) < 3:
+        return pts
+
+    def rdp(a, b, lo, hi):
+        dmax, idx = 0.0, -1
+        ax, ay = pts[a]
+        bx, by = pts[b]
+        dx, dy = bx - ax, by - ay
+        nlen = math.hypot(dx, dy) or 1e-9
+        for i in range(lo, hi):
+            px, py = pts[i]
+            d = abs((px - ax) * dy - (py - ay) * dx) / nlen
+            if d > dmax:
+                dmax, idx = d, i
+        if dmax > eps and idx != -1:
+            left = rdp(a, idx, a + 1, idx)
+            right = rdp(idx, b, idx + 1, b)
+            return left[:-1] + right
+        return [pts[a], pts[b]]
+
+    return rdp(0, len(pts) - 1, 1, len(pts) - 1)
+
+
+def _is_closed(pts):
+    return (len(pts) > 3 and
+            math.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) < 2.0)
+
+
+def simplify_any(pts, eps):
+    """RDP that handles closed contours (plain RDP collapses them: coincident
+    endpoints make a degenerate baseline). Splits a closed loop at its farthest
+    point and RDPs each arc."""
+    if len(pts) < 4:
+        return pts
+    if not _is_closed(pts):
+        return simplify(pts, eps)
+    p = pts[:-1] if pts[0] == pts[-1] else pts[:]
+    n = len(p)
+    far = max(range(n), key=lambda i: (p[i][0] - p[0][0]) ** 2 + (p[i][1] - p[0][1]) ** 2)
+    arc1 = p[0:far + 1]
+    arc2 = p[far:] + [p[0]]
+    s1 = simplify(arc1, eps)
+    s2 = simplify(arc2, eps)
+    return s1[:-1] + s2[:-1]
+
+
+def resample_open(pts, n):
+    cum = [0.0]
+    for i in range(1, len(pts)):
+        cum.append(cum[-1] + math.hypot(pts[i][0] - pts[i - 1][0],
+                                        pts[i][1] - pts[i - 1][1]))
+    total = cum[-1]
+    if total < 1e-9:
+        return [list(pts[0]) for _ in range(n)]
+    out, j = [], 0
+    for i in range(n):
+        t = total * i / (n - 1)
+        while j < len(pts) - 2 and cum[j + 1] < t:
+            j += 1
+        u = (t - cum[j]) / max(1e-9, cum[j + 1] - cum[j])
+        out.append([pts[j][0] + (pts[j + 1][0] - pts[j][0]) * u,
+                    pts[j][1] + (pts[j + 1][1] - pts[j][1]) * u])
+    return out
+
+
+def turning_descriptor(pts):
+    """16-bin turning-angle descriptor — identical math to app.py turningDescOf."""
+    rs = resample_open(pts, DESC_N + 2)
+    d = [0.0] * DESC_N
+    prev = math.atan2(rs[1][1] - rs[0][1], rs[1][0] - rs[0][0])
+    for i in range(1, DESC_N + 1):
+        a = math.atan2(rs[i + 1][1] - rs[i][1], rs[i + 1][0] - rs[i][0])
+        t = a - prev
+        while t > math.pi:
+            t -= 2 * math.pi
+        while t < -math.pi:
+            t += 2 * math.pi
+        d[i - 1] = t
+        prev = a
+    return d
+
+
+def split_fragments(poly):
+    """Cut a (relative-coord) polygon into open fragments at sharp corners."""
+    n = len(poly)
+    if n < MIN_FRAG_PTS:
+        return []
+    cuts = [0]
+    for i in range(1, n - 1):
+        ax, ay = poly[i - 1]
+        bx, by = poly[i]
+        cx, cy = poly[i + 1]
+        a1 = math.atan2(by - ay, bx - ax)
+        a2 = math.atan2(cy - by, cx - bx)
+        t = a2 - a1
+        while t > math.pi:
+            t -= 2 * math.pi
+        while t < -math.pi:
+            t += 2 * math.pi
+        if abs(t) > CORNER_ANGLE:
+            cuts.append(i)
+    cuts.append(n - 1)
+    # smooth loop with no corners: fall back to even arcs so domes / smooth
+    # sculpture still contribute quotable fragments
+    if len(cuts) == 2 and n >= 3 * MIN_FRAG_PTS:
+        arcs = 3
+        cuts = [round(j * (n - 1) / arcs) for j in range(arcs + 1)]
+    frags = []
+    for a, b in zip(cuts, cuts[1:]):
+        seg = poly[a:b + 1]
+        if len(seg) >= MIN_FRAG_PTS:
+            frags.append(seg)
+    return frags
+
+
+def build_frags(sil, inner):
+    frags = []
+    for poly in sil + inner:
+        for seg in split_fragments(poly):
+            frags.append({
+                "p": [[round(float(x), 5), round(float(y), 5)] for x, y in seg],
+                "d": [round(float(v), 5) for v in turning_descriptor(seg)],
+                "c": 1, "t": 0, "k": "free",
+            })
+            if len(frags) >= MAX_FRAGS:
+                return frags
+    return frags
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--limit", type=int, default=0)
+    args = ap.parse_args()
+
+    with open(MANIFEST_PATH, encoding="utf-8") as f:
+        manifest = json.load(f)
+    rows = [m for m in manifest if m.get("canonical")]
+    path_of = {m["id"]: m["path"] for m in rows}
+
+    if INDEX_PATH.exists():
+        with open(INDEX_PATH) as f:
+            ids = json.load(f)["ids"]
+    else:
+        ids = [m["id"] for m in rows]
+    if args.limit:
+        ids = ids[:args.limit]
+
+    items = {}
+    n_sil = 0
+    for k, i in enumerate(ids):
+        p = path_of.get(i)
+        if not p:
+            continue
+        try:
+            im = load_rgb_small(str(resolve_path(p)))
+            sil, grad, gmax = border_flood_silhouette(im)
+            w, h = im.size
+            inner = inner_contours(grad, gmax, w, h) if sil else []
+            frags = build_frags(sil, inner)
+            if sil or inner:
+                items[i] = {"sil": sil, "inner": inner, "frags": frags}
+                if sil:
+                    n_sil += 1
+        except Exception as exc:
+            print(f"  skip {i}: {exc}")
+        if (k + 1) % 200 == 0:
+            print(f"  {k + 1}/{len(ids)}  ({n_sil} with silhouette)")
+
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(OUT_PATH, "w", encoding="utf-8") as f:
+        json.dump({"items": items, "desc_n": DESC_N}, f, ensure_ascii=False)
+    print(f"\nwrote {OUT_PATH}")
+    print(f"{len(items)}/{len(ids)} items, {n_sil} with a figure silhouette")
+    print("restart Streamlit + hard refresh; set worlds silhouettes = auto or sidecar")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+=======
 import sys
 import time
 from pathlib import Path
@@ -587,3 +1020,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1

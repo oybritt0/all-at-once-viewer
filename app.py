@@ -163,6 +163,39 @@ def categorical_palette(values, palette_name="tab10"):
 # =============================================================================
 # SVG writer
 # =============================================================================
+<<<<<<< HEAD
+NUMERIC_COLOR_FIELDS = {"density", "surprise_pct"}
+
+
+def resolve_point_colors(df, color_field, palette_name, override_color):
+    """Per-point hex colors. Numeric signal fields (density, surprise_pct) map
+    through a continuous colormap (NaN -> neutral grey); everything else stays
+    categorical via categorical_palette."""
+    if color_field == "none":
+        return [override_color] * len(df)
+    if color_field in NUMERIC_COLOR_FIELDS and color_field in df.columns:
+        vals = pd.to_numeric(df[color_field], errors="coerce").to_numpy(dtype=float)
+        cmap_name = "viridis" if color_field == "density" else "magma"
+        try:
+            cmap = matplotlib.colormaps.get_cmap(cmap_name)
+        except Exception:
+            import matplotlib.cm as _cm
+            cmap = _cm.get_cmap(cmap_name)
+        out = []
+        for v in vals:
+            if v != v:  # NaN
+                out.append("#555555")
+            else:
+                r, g, b, _a = cmap(min(1.0, max(0.0, float(v))))
+                out.append("#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255)))
+        return out
+    vals = df[color_field].astype(str)
+    lookup = categorical_palette(vals, palette_name)
+    return [lookup[v] for v in vals]
+
+
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 class SVGCanvas:
     INKSCAPE = "http://www.inkscape.org/namespaces/inkscape"
     SODIPODI = "http://sodipodi.sourceforge.net/DTD/sodipodi-0.0.dtd"
@@ -359,11 +392,39 @@ def load_data():
     df_valid["pca_y"] = pca_2d[:, 1]
 
     # Normalize categorical columns to strings
+<<<<<<< HEAD
+    for col in ["category", "period", "subject", "cluster"]:
+=======
     for col in ["category", "subtype", "era", "cluster"]:
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
         if col in df_valid.columns:
             df_valid[col] = df_valid[col].astype("object").where(df_valid[col].notna(), "unknown")
             df_valid[col] = df_valid[col].astype(str)
 
+<<<<<<< HEAD
+    # Per-point viewer signals (viewer_signals.py): local DINO density
+    # (1 = dog / cluster core, 0 = rabbit / gap-adjacent), per-period conv-AE
+    # surprise percentile, and the discovered mode. Aligned by id.
+    sig_path = EMBEDDINGS_DIR / "point_signals.json"
+    if sig_path.exists():
+        with open(sig_path, encoding="utf-8") as f:
+            _sig = json.load(f)
+        _sig_df = pd.DataFrame({
+            "id": _sig["ids"],
+            "density": _sig["density"],
+            "surprise_pct": _sig["surprise_pct"],
+            "mode_label": _sig["mode_label"],
+        })
+        df_valid = df_valid.merge(_sig_df, on="id", how="left")
+    else:
+        df_valid["density"] = np.nan
+        df_valid["surprise_pct"] = np.nan
+        df_valid["mode_label"] = ""
+    df_valid["mode_label"] = df_valid["mode_label"].fillna("").astype(str)
+    df_valid.loc[df_valid["mode_label"].isin(["", "None", "nan"]), "mode_label"] = "unassigned"
+
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     return df_valid, valid_features, embeddings_3d, []
 
 
@@ -430,6 +491,46 @@ def load_content_geometry(mtime: float):
         return {}
 
 
+<<<<<<< HEAD
+def _decim_poly(poly, max_pts=40, ndp=3):
+    n = len(poly)
+    if n < 1:
+        return []
+    if n <= max_pts:
+        return [[round(float(p[0]), ndp), round(float(p[1]), ndp)] for p in poly]
+    step = (n + max_pts - 1) // max_pts
+    out = [poly[i] for i in range(0, n, step)]
+    if out[-1] is not poly[-1]:
+        out.append(poly[-1])
+    return [[round(float(p[0]), ndp), round(float(p[1]), ndp)] for p in out]
+
+
+def decimate_geometry(items, max_poly_pts=40, max_frags=8, max_frag_pts=24):
+    """Shrink the sidecar payload: reduce polygon vertex counts and round
+    coordinates. Coarse region polygons are visually unchanged."""
+    out = {}
+    for key_id, v in items.items():
+        nv = {}
+        for k in ("sil", "inner", "sal"):
+            arr = v.get(k)
+            if arr:
+                nv[k] = [_decim_poly(p, max_poly_pts) for p in arr if p and len(p) >= 3]
+        frags = v.get("frags")
+        if frags:
+            nf = []
+            for f in frags[:max_frags]:
+                nf.append({
+                    "p": _decim_poly(f.get("p", []), max_frag_pts),
+                    "d": [round(float(x), 4) for x in f.get("d", [])],
+                    "c": f.get("c", 1), "t": f.get("t", 0), "k": f.get("k", "free"),
+                })
+            nv["frags"] = nf
+        out[key_id] = nv
+    return out
+
+
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 @st.cache_data(show_spinner="Computing KNN edges...")
 def compute_knn_edges(features_bytes: bytes, n: int, dim: int, k: int):
     """KNN edges. features_bytes makes the cache key stable."""
@@ -558,12 +659,17 @@ def render_to_svg(settings, df_valid, valid_features):
         screen, _ = project_2d_to_screen(pts, W, H, padding=pad)
         depth = np.zeros(len(df_valid))
 
+<<<<<<< HEAD
+    fills = resolve_point_colors(df_valid, s["color_field"],
+                                  s["palette_name"], s["override_color"])
+=======
     if s["color_field"] == "none":
         fills = [s["override_color"]] * len(df_valid)
     else:
         vals = df_valid[s["color_field"]].astype(str)
         color_lookup = categorical_palette(vals, s["palette_name"])
         fills = [color_lookup[v] for v in vals]
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 
     order = np.argsort(depth) if s["projection"] == "umap_3d" else np.arange(len(df_valid))
 
@@ -658,6 +764,11 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
   #overlay {
     position: absolute; top: 10px; left: 10px;
     z-index: 10;
+<<<<<<< HEAD
+    max-height: calc(100% - 24px);
+    overflow-y: auto;
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     color: #ddd; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
     background: rgba(0,0,0,0.55);
@@ -707,6 +818,13 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
     <button id="copy">Copy angles</button>
     <button id="reset">Reset</button>
   </div>
+<<<<<<< HEAD
+  <div class="row" style="margin-top:4px;color:#999;font-size:10px;">
+    <button id="copyCam" title="Copy this exact camera (position, target, lens) as a string. Paste it into the constellation viewer's 'match worlds view' box to reproduce this perspective there, then export a PNG.">copy camera &rarr; constellation</button><br>
+    <input id="camOut" readonly placeholder="camera string appears here — select &amp; copy" style="width:210px;font-size:10px;background:#1a1a1a;color:#9fe3b5;border:1px solid #555;margin-top:3px;padding:1px 3px;">
+  </div>
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   <div class="row" style="margin-top:6px;color:#999;font-size:10px;">
     sprite size: <input id="sizeRange" type="range" min="0.3" max="3.0" step="0.1" value="1.0" style="vertical-align:middle">
   </div>
@@ -715,11 +833,19 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
     <span id="lensValue">45°</span> <span style="color:#666;">(wide = strong perspective)</span>
   </div>
   <div class="row" style="margin-top:4px;color:#999;font-size:10px;">
+<<<<<<< HEAD
+    opacity: <input id="opacityRange" title="sprite opacity — lower to read density through overlap" type="range" min="0.05" max="1.0" step="0.05" value="1.0" style="vertical-align:middle;width:90px">
+    <span id="opacityValue">1.00</span>
+  </div>
+  <div class="row" style="margin-top:4px;color:#999;font-size:10px;">
+    blend: <select id="blendMode" title="how overlapping sprites composite — additive/screen make dense regions glow, multiply/darken make them sink" style="background:#1a1a1a;color:#ccc;border:1px solid #555;font-size:11px;padding:1px 3px;">
+=======
     opacity: <input id="opacityRange" type="range" min="0.05" max="1.0" step="0.05" value="1.0" style="vertical-align:middle;width:90px">
     <span id="opacityValue">1.00</span>
   </div>
   <div class="row" style="margin-top:4px;color:#999;font-size:10px;">
     blend: <select id="blendMode" style="background:#1a1a1a;color:#ccc;border:1px solid #555;font-size:11px;padding:1px 3px;">
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
       <option value="normal">normal</option>
       <option value="additive">additive (Linear Dodge)</option>
       <option value="screen">screen</option>
@@ -735,6 +861,48 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
   <hr class="sep">
   <div class="row modeRow" style="color:#999;font-size:11px;">
     <b style="color:#ddd;">render mode</b><br>
+<<<<<<< HEAD
+    <label title="photographs as camera-facing sprites at their latent positions"><input type="radio" name="renderMode" value="images" checked>images</label>
+    <label title="kernel-density isocontours of the projected point positions"><input type="radio" name="renderMode" value="heatmap">heatmap</label>
+    <label title="drawn translations of the field: outlines, segmentation, worlds, stacked perspectives"><input type="radio" name="renderMode" value="linework">linework</label>
+  </div>
+  <div class="row" style="margin-top:4px;color:#999;font-size:10px;">
+    <b style="color:#ddd;" title="dog/rabbit filter on DINO local density. Dogs = cluster cores (density above the threshold percentile). Rabbits = sparse, gap-adjacent points (below it). Filters sprites, contours, worlds, volumes AND svg exports.">focus</b>
+    <select id="focusMode" title="all points / only the dense cores (dogs) / only the sparse gap-adjacent points (rabbits)" style="background:#1a1a1a;color:#ccc;border:1px solid #555;font-size:11px;padding:1px 3px;">
+      <option value="off" selected>all points</option>
+      <option value="dogs">dogs &middot; dense &ge;</option>
+      <option value="rabbits">rabbits &middot; sparse &le;</option>
+    </select>
+    <input id="focusPctRange" title="density percentile threshold for the dogs/rabbits filter" type="range" min="0" max="1" step="0.01" value="0.5" style="width:80px">
+    <span id="focusPctValue">0.50</span>
+    <span style="color:#666;">density pctile</span>
+  </div>
+  <div class="row" style="margin-top:4px;color:#999;font-size:10px;">
+    <b style="color:#ddd;" title="one entry per 'Split layers by' value from the sidebar (period, discovered mode, category...). Hiding a layer hides its sprites AND its metaball volume, everywhere including exports.">layers</b>
+    <label style="cursor:pointer;" title="toggle every layer at once"><input type="checkbox" id="layersAll" checked>all</label>
+    <div id="layerToggles" style="max-height:110px;overflow-y:auto;margin-top:2px;line-height:1.6;"></div>
+  </div>
+  <div class="row" style="margin-top:4px;color:#999;font-size:10px;">
+    <b style="color:#ddd;" title="the three representation modes (categories). Unchecking one hides those works everywhere — sprites, contours, worlds, volumes, perimeter and SVG export.">representation</b>
+    <div id="categoryToggles" style="margin-top:2px;line-height:1.6;"></div>
+  </div>
+  <div id="heatmapControls" class="row" style="display:none;margin-top:4px;color:#999;font-size:10px;">
+    bandwidth: <input id="bandwidthRange" title="KDE kernel radius in screen px — small hugs individual points, large merges regions into blobs" type="range" min="10" max="160" step="2" value="40" style="width:80px">
+    <span id="bandwidthValue">40</span>px<br>
+    levels: <input id="levelsRange" title="number of iso-density contour levels drawn" type="range" min="2" max="12" step="1" value="6" style="width:80px">
+    <span id="levelsValue">6</span><br>
+    style:
+    <select id="heatmapStyle" title="filled isobands, contour lines only, or both" style="background:#1a1a1a;color:#ccc;border:1px solid #555;font-size:11px;padding:1px 3px;">
+      <option value="filled">filled isobands</option>
+      <option value="lines" selected>contour lines</option>
+      <option value="both">both</option>
+    </select><br>
+    <label style="cursor:pointer;" title="contour (envelope − density): only the enclosed emptiness INSIDE the cloud draws — the gaps become the contours, the open frame stays blank"><input type="checkbox" id="heatmapInvert">invert &middot; contour the gaps</label>
+  </div>
+  <div id="lineworkControls" class="row" style="display:none;margin-top:4px;color:#999;font-size:10px;">
+    style:
+    <select id="lineworkStyle" title="which drawn translation of the field: card outlines, image-content segmentation, composition, worlds (bounded latent regions), stacked perspectives" style="background:#1a1a1a;color:#ccc;border:1px solid #555;font-size:11px;padding:1px 3px;">
+=======
     <label><input type="radio" name="renderMode" value="images" checked>images</label>
     <label><input type="radio" name="renderMode" value="heatmap">heatmap</label>
     <label><input type="radio" name="renderMode" value="linework">linework</label>
@@ -754,6 +922,7 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
   <div id="lineworkControls" class="row" style="display:none;margin-top:4px;color:#999;font-size:10px;">
     style:
     <select id="lineworkStyle" style="background:#1a1a1a;color:#ccc;border:1px solid #555;font-size:11px;padding:1px 3px;">
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
       <option value="segmentation" selected>image segmentation (watershed-ish)</option>
       <option value="collapsed_field">worlds (recognizable exemplar per cluster)</option>
       <option value="composition">swatch composition (rectangles + segmentation)</option>
@@ -765,6 +934,47 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
     line weight: <input id="lineweightRange" type="range" min="0.3" max="3.0" step="0.1" value="0.8" style="width:80px">
     <span id="lineweightValue">0.8</span>px<br>
     <span style="color:#666;">— segmentation —</span><br>
+<<<<<<< HEAD
+    sensitivity: <input id="segSensRange" title="edge-agreement threshold. Higher = more lines; lower now reaches much further (0.05 = only the strongest accumulations) for cleaner, higher-fidelity linework." type="range" min="0.05" max="0.95" step="0.02" value="0.75" style="width:80px">
+    <span id="segSensValue">0.75</span><br>
+    smoothness: <input id="segBlurRange" type="range" min="0.5" max="3.5" step="0.1" value="1.4" style="width:80px">
+    <span id="segBlurValue">1.4</span><br>
+    straighten: <input id="segStraightenRange" title="Douglas-Peucker tolerance: near-straight runs snap to straight segments; genuine curves keep their vertices. 0 = off." type="range" min="0" max="6" step="0.2" value="1.5" style="width:80px">
+    <span id="segStraightenValue">1.5</span><br>
+    <label style="cursor:pointer;" title="draw the sprite-card rectangle frames in composition mode. Off = just the segmentation curves, no image borders."><input type="checkbox" id="swatchFrames">swatch frames</label><br>
+    <label style="cursor:pointer;" title="render the unified segmentation with dog/rabbit character: dense (dog) runs quantized to a grid (pixelated/stepped), sparse (rabbit) runs smoothed (gestural)."><input type="checkbox" id="segArticulate">articulate &middot; dog pixelated / rabbit gestural</label><br>
+    <span style="color:#666;">grid: <input id="segGridRange" title="pixelation grid size for dog runs (screen px)" type="range" min="3" max="24" step="1" value="8" style="width:60px;vertical-align:middle;"> <span id="segGridValue">8</span>px</span><br>
+    unify: <select id="segUnifyMode" title="off = pure linework. enclosed = fill areas the curves ring around (nested loops become holes). density = fill where lines pile up (sparse gaps become holes)." style="background:#1a1a1a;color:#ccc;border:1px solid #555;font-size:11px;padding:1px 3px;">
+      <option value="off" selected>off (linework)</option>
+      <option value="enclosed">enclosed areas</option>
+      <option value="density">dense regions</option>
+    </select><br>
+    <span style="color:#666;">amount: <input id="segUnifyRange" title="enclosed: gap-closing tolerance for sealing near-closed loops. density: blur reach that fuses nearby lines." type="range" min="0" max="1" step="0.02" value="0.3" style="width:70px;vertical-align:middle;"> <span id="segUnifyValue">0.30</span></span>
+    <label style="cursor:pointer;margin-left:8px;" title="fill the space BETWEEN the figures instead of the figures — the gaps become solid, the figures become holes"><input type="checkbox" id="segUnifyInvert">invert</label><br>
+    worlds complexity: <input id="worldsComplexityRange" title="how much secondary (non-medoid) texture survives inside each world — 1 keeps the full field, lower conjoins members via chords" type="range" min="0" max="1" step="0.02" value="1" style="width:80px">
+    <span id="worldsComplexityValue">1.00</span><br>
+    worlds unify: <input id="worldsUnifyRange" title="boolean-union amount: 0 = separate member silhouettes, 1 = each world welded into continuous figures via chord necks (de l'Orme / Evans)" type="range" min="0" max="1" step="0.02" value="0" style="width:80px">
+    <span id="worldsUnifyValue">0.00</span> <span style="color:#666;">(reach: fillet span between members)</span><br>
+    worlds tightness: <input id="worldsTightRange" title="how closely the union boundary hugs the member cores. High = crisp around the silhouettes; low = looser, more enclosing. Decoupled from unify (which sets how far members reach to merge)." type="range" min="0" max="1" step="0.02" value="0.5" style="width:80px">
+    <span id="worldsTightValue">0.50</span> <span style="color:#666;">(boundary hug)</span><br>
+    worlds quote: <input id="worldsQuoteRange" title="fraction of each union boundary rebuilt from curve fragments quoted from the world's own members. Needs content_geometry.json extracted for the CURRENT dataset ids — a stale sidecar leaves this inert (notice appears on canvas)." type="range" min="0" max="1" step="0.02" value="0" style="width:80px">
+    <span id="worldsQuoteValue">0.00</span> <span style="color:#666;">(boundary from member curves)</span><br>
+    worlds spread: <input id="worldsSpreadRange" title="dilates all latent positions about the centroid (scene and projections together) so worlds separate on screen" type="range" min="0.5" max="4" step="0.05" value="1" style="width:80px">
+    <span id="worldsSpreadValue">1.00</span> <span style="color:#666;">(expands all modes)</span><br>
+    silhouettes: <select id="silhouetteSource" title="where member silhouettes come from: sidecar = extract_geometry.py figural masks; image mask = border-flood figure/ground traced live from the pixels; sobel = legacy gradient isolines. auto prefers sidecar, then image mask." style="background:#1a1a1a;color:#ccc;border:1px solid #555;font-size:11px;padding:1px 3px;">
+      <option value="auto" selected>auto (sidecar &rarr; image mask &rarr; sobel)</option>
+      <option value="sidecar">sidecar (extract_geometry.py)</option>
+      <option value="flood">image mask (border flood)</option>
+      <option value="grad">sobel isolines (legacy)</option>
+      <option value="salience">salience (DINO attention)</option>
+    </select><br>
+    <label style="cursor:pointer;" title="red leader from every quoted boundary segment to the member work it was quoted from, dot at the source"><input type="checkbox" id="showQuoteSources">show quote sources</label> <span style="color:#666;">(red leaders to quoted members)</span><br>
+    <label style="cursor:pointer;" title="world membership = the stratify layers (periods / discovered modes) instead of the arbitrary K clustering"><input type="checkbox" id="worldsFromLayers">worlds = layers (periods/modes)</label><br>
+    <label style="cursor:pointer;" title="size each silhouette by the sprite's true projected footprint — worlds register 1:1 with the images mode at the same camera"><input type="checkbox" id="worldsMatchImages">match image scale (register to images)</label><br>
+    <label style="cursor:pointer;" title="draw the space BETWEEN the union figures as filled polygons; the figures themselves vanish — the enclosed emptiness becomes the drawing"><input type="checkbox" id="worldsInvert">invert &middot; figure the gaps</label><br>
+    <label style="cursor:pointer;" title="in images mode, draw the worlds union boundaries and quote-source threads live over the photographs at the same camera — direct visual registration"><input type="checkbox" id="worldsOverImages">worlds curves over images mode</label><br>
+    articulation: <select id="articulationSignalSelect" title="which signal decides where worlds boundaries stay articulated vs break into gesture: per-period conv-AE surprise (typical stays crisp, surprising goes gestural) or raw Sobel edge density" style="width:140px">
+=======
     sensitivity: <input id="segSensRange" type="range" min="0.35" max="0.95" step="0.02" value="0.75" style="width:80px">
     <span id="segSensValue">0.75</span><br>
     smoothness: <input id="segBlurRange" type="range" min="0.5" max="3.5" step="0.1" value="1.4" style="width:80px">
@@ -776,12 +986,20 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
     worlds quote: <input id="worldsQuoteRange" type="range" min="0" max="1" step="0.02" value="0" style="width:80px">
     <span id="worldsQuoteValue">0.00</span> <span style="color:#666;">(boundary from member curves)</span><br>
     articulation: <select id="articulationSignalSelect" style="width:140px">
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
       <option value="autoencoder">autoencoder (typical↔surprising)</option>
       <option value="vision">vision (edge density)</option>
     </select> <span style="color:#666;">(what turns gestural)</span><br>
     <span style="color:#666;">— rectangle modes —</span><br>
     depth fade: <input id="lineworkFadeRange" type="range" min="0" max="0.9" step="0.05" value="0.5" style="width:80px">
+<<<<<<< HEAD
+    <span id="lineworkFadeValue">0.50</span><br>
+    <label style="cursor:pointer;"><input type="checkbox" id="ghostImages">show images under linework</label>
+    ghost: <input id="ghostOpacityRange" type="range" min="0.1" max="1" step="0.05" value="0.35" style="width:60px">
+    <span id="ghostOpacityValue">0.35</span>
+=======
     <span id="lineworkFadeValue">0.50</span>
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   </div>
   <hr class="sep">
   <div class="row" style="color:#999;font-size:11px;">
@@ -804,6 +1022,23 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
   <hr class="sep">
   <div class="row" style="color:#999;font-size:11px;">
     <b style="color:#ddd;">3D enclosing volume</b><br>
+<<<<<<< HEAD
+    <label title="translucent metaball isosurface(s) around the point cloud — one tinted volume per visible layer, so period/mode intersections and gaps read as volumes meeting or standing apart"><input type="checkbox" id="showVolume">show metaball surface</label><br>
+    <label style="font-size:10px;cursor:pointer;" title="invert: one broad envelope with every shown point carved out of it — the enclosed emptiness between points as a navigable surface (the phantom as volume)"><input type="checkbox" id="volumeGap">gap volume &middot; carve points from envelope</label>
+    <span style="font-size:10px;color:#999;"> carve: <input id="gapCarveRange" title="carve strength per point for the gap volume — tune against metaball size until the interstitial surface resolves" type="range" min="0.2" max="3" step="0.05" value="1.0" style="width:60px;vertical-align:middle;">
+    <span id="gapCarveValue">1.00</span></span>
+  </div>
+  <div id="volumeControls" class="row" style="display:none;margin-top:4px;color:#999;font-size:10px;">
+    resolution: <input id="volumeResRange" title="marching-cubes grid resolution — higher is smoother but slower, especially with many layer volumes" type="range" min="20" max="64" step="2" value="40" style="width:80px">
+    <span id="volumeResValue">40</span><br>
+    metaball size: <input id="volumeStrRange" title="metaball radius per point — larger merges neighbours into one surface sooner" type="range" min="0.05" max="1.5" step="0.05" value="0.3" style="width:80px">
+    <span id="volumeStrValue">0.30</span><br>
+    opacity: <input id="volumeOpRange" title="volume surface opacity" type="range" min="0.15" max="1.0" step="0.05" value="0.45" style="width:80px">
+    <span id="volumeOpValue">0.45</span><br>
+    color: <input id="volumeColor" title="surface tint for the gap volume and wireframe — per-layer volumes take their layer colors automatically" type="color" value="#e6e6e6" style="vertical-align:middle;width:40px"><br>
+    style:
+    <select id="volumeStyle" title="solid lit surface, wireframe only, or both" style="background:#1a1a1a;color:#ccc;border:1px solid #555;font-size:11px;padding:1px 3px;">
+=======
     <label><input type="checkbox" id="showVolume">show metaball surface</label>
   </div>
   <div id="volumeControls" class="row" style="display:none;margin-top:4px;color:#999;font-size:10px;">
@@ -816,6 +1051,7 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
     color: <input id="volumeColor" type="color" value="#e6e6e6" style="vertical-align:middle;width:40px"><br>
     style:
     <select id="volumeStyle" style="background:#1a1a1a;color:#ccc;border:1px solid #555;font-size:11px;padding:1px 3px;">
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
       <option value="solid" selected>solid (lit)</option>
       <option value="wireframe">wireframe</option>
       <option value="both">both</option>
@@ -826,7 +1062,15 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
   <hr class="sep">
   <div class="row" style="color:#999;font-size:11px;">
     <b style="color:#ddd;">latent contours</b><br>
+<<<<<<< HEAD
+    <label><input type="checkbox" id="showContours" checked>trace the space</label><br>
+    <label style="cursor:pointer;" title="one closed outline around each visible period/mode layer, recomputed from the current view. It is the density isocontour of the layer's projected points — the silhouette of the form as seen from the camera. Never self-intersects. Works in images, worlds and segmentation views."><input type="checkbox" id="perimeterToggle">perimeter outline per layer</label><br>
+    <span style="font-size:10px;color:#999;">tightness: <input id="perimeterTightRange" title="how closely the outline wraps: low relaxes to one smooth blob that swallows outliers; high hugs the points and may resolve into a few clean loops" type="range" min="0" max="1" step="0.02" value="0.5" style="width:70px;vertical-align:middle;"> <span id="perimeterTightValue">0.50</span></span><br>
+    <span style="font-size:10px;color:#999;">smoothness: <input id="perimeterSmoothRange" title="Chaikin corner-cutting passes — 0 is angular, higher rounds the curve" type="range" min="0" max="6" step="1" value="2" style="width:70px;vertical-align:middle;"> <span id="perimeterSmoothValue">2</span></span><br>
+    <span style="font-size:10px;color:#999;">fill: <input id="perimeterFillRange" title="translucent fill opacity inside each layer outline" type="range" min="0" max="0.5" step="0.02" value="0.0" style="width:70px;vertical-align:middle;"> <span id="perimeterFillValue">0.00</span></span>
+=======
     <label><input type="checkbox" id="showContours" checked>trace the space</label>
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   </div>
   <div id="contourControls" class="row" style="margin-top:4px;color:#999;font-size:10px;">
     density: <input id="contourLevelRange" type="range" min="0.06" max="0.4" step="0.02" value="0.16" style="width:80px">
@@ -893,11 +1137,45 @@ document.body.appendChild(renderer.domElement);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(cx, cy, cz);
 controls.enableDamping = true;
+<<<<<<< HEAD
+controls.dampingFactor = 0.12;
+controls.rotateSpeed = 0.45;          // was Three default 1.0 — too twitchy, esp. over the
+                                      // worlds field which recomputes on every camera settle
+controls.panSpeed = 0.6;
+controls.enablePan = true;
+controls.screenSpacePanning = true;   // pan parallel to the screen (right-drag)
+controls.enableZoom = false;          // OrbitControls' wheel handler scales with raw deltaY, which
+                                      // trackpads fire in huge bursts. Replaced below with a fixed-
+                                      // step handler so each notch is a predictable percentage.
+controls.update();
+
+// Custom wheel zoom: fixed percentage step per event, clamped so the camera
+// can't blow past the near plane or get lost arbitrarily far away. Operates on
+// the offset vector (position - target) and rewrites position directly;
+// OrbitControls re-reads position from the scene each frame so this composes
+// cleanly with orbit/pan and with the FOV lens slider.
+const ZOOM_STEP = 0.03;
+const ZOOM_MIN = Math.max(0.02, radius * 0.05);
+const ZOOM_MAX = radius * 50;
+const _zoomOffset = new THREE.Vector3();
+renderer.domElement.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const sign = Math.sign(e.deltaY);
+  if (sign === 0) return;
+  const factor = sign > 0 ? (1 + ZOOM_STEP) : (1 - ZOOM_STEP);
+  _zoomOffset.copy(camera.position).sub(controls.target);
+  const newLen = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, _zoomOffset.length() * factor));
+  _zoomOffset.setLength(newLen);
+  camera.position.copy(controls.target).add(_zoomOffset);
+}, { passive: false });
+
+=======
 controls.dampingFactor = 0.08;
 controls.enablePan = true;
 controls.screenSpacePanning = true;   // pan parallel to the screen (right-drag)
 controls.update();
 
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 // Scene lighting. Sprites use unlit SpriteMaterial so they don't react to
 // these — only the marching-cubes enclosing volume (added later, on demand)
 // will be lit. Directional light comes from above-right; ambient fills shadows
@@ -1089,10 +1367,107 @@ let lineworkWeight = 0.8;
 let lineworkStyle = 'segmentation';   // 'segmentation' | 'all' | 'ghosted' | 'occluded'
 let lineworkFade = 0.5;
 let worldsComplexity = 1.0;   // 1 = dense field, lower = conjoin via chords
+<<<<<<< HEAD
+let worldsTight = 0.5;        // soft-union boundary iso-level (hug vs. enclose)
+let worldsUnify = 0.0;        // 0 = fragmented field, higher = boolean-union figures
+let worldsQuote = 0.0;        // fraction of union boundary rebuilt from member curve fragments
+let worldsSpread = 1.0;       // scales latent positions about the centroid in worlds projection
+let ghostImages = false;      // keep sprites visible under linework for source comparison
+let showQuoteSources = false; // debug: leader lines from quotes to their source members
+// --- focus (dog/rabbit), layer toggles, worlds registration, inversion -----
+let focusMode = 'off';         // 'off' | 'dogs' | 'rabbits'
+let focusPct = 0.5;            // density percentile threshold
+const layerHidden = new Set(); // stratify layers currently toggled off
+const categoryHidden = new Set(); // representation modes (categories) toggled off
+let worldsFromLayers = false;  // worlds membership = stratify layers, not k-means
+let worldsMatchImages = false; // silhouettes sized to true sprite footprint
+let worldsInvert = false;      // draw the gaps between union figures
+let worldsOverImages = false;  // union curves overlaid live on images mode
+let heatmapInvert = false;     // contour envelope - density (the gaps)
+let volumeGap = false;         // 3D: envelope minus points
+let gapCarve = 1.0;
+let spritesBaseVisible = true;
+
+POINTS.forEach((p, i) => { p._i = i; });
+
+function pointShownP(p) {
+  if (!p) return false;
+  if (layerHidden.has(p.layer)) return false;
+  if (p.cat && categoryHidden.has(p.cat)) return false;
+  if (focusMode === 'off' || p.dens == null) return true;
+  return (focusMode === 'dogs') ? (p.dens >= focusPct) : (p.dens <= focusPct);
+}
+function refreshSpriteFilter() {
+  for (const sp of sprites) sp.visible = spritesBaseVisible && pointShownP(sp.userData);
+}
+function focusChanged() {
+  refreshSpriteFilter();
+  if (typeof scheduleVolumeRebuild === 'function') scheduleVolumeRebuild(120);
+  markOverlayDirty();
+}
+function buildCategoryPanel() {
+  const host = document.getElementById('categoryToggles');
+  if (!host) return;
+  const uniq = Array.from(new Set(POINTS.map(p => p.cat).filter(Boolean))).sort();
+  host.innerHTML = '';
+  categoryHidden.clear();
+  for (const cat of uniq) {
+    const w = document.createElement('label');
+    w.style.cssText = 'display:inline-block;cursor:pointer;margin-right:10px;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = true;
+    w.appendChild(cb);
+    w.appendChild(document.createTextNode(' ' + cat));
+    host.appendChild(w);
+    cb.addEventListener('change', (e) => {
+      if (e.target.checked) categoryHidden.delete(cat); else categoryHidden.add(cat);
+      focusChanged();
+    });
+  }
+}
+function buildLayerPanel() {
+  const host = document.getElementById('layerToggles');
+  if (!host) return;
+  const uniq = Array.from(new Set(POINTS.map(p => p.layer))).sort();
+  host.innerHTML = '';
+  layerHidden.clear();
+  for (const lab of uniq) {
+    const w = document.createElement('label');
+    w.style.cssText = 'display:block;cursor:pointer;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = true;
+    w.appendChild(cb);
+    w.appendChild(document.createTextNode(' ' + lab));
+    host.appendChild(w);
+    cb.addEventListener('change', (e) => {
+      if (e.target.checked) layerHidden.delete(lab); else layerHidden.add(lab);
+      const allBox = document.getElementById('layersAll');
+      if (allBox) allBox.checked = (layerHidden.size === 0);
+      focusChanged();
+    });
+  }
+}
+function layerLabelsForWorlds() {
+  const uniq = Array.from(new Set(POINTS.map(p => p.layer))).sort();
+  const idx = new Map(uniq.map((l, k) => [l, k]));
+  return POINTS.map(p => idx.get(p.layer) || 0);
+}
+let ghostOpacity = 0.35;
+let segSensitivity = 0.75;            // 0..1; higher = more detail (lower threshold)
+let segBlur = 1.4;                    // Gaussian sigma in pixels for pre-blur
+let segStraighten = 1.5;              // Douglas-Peucker tolerance (0 = off)
+let swatchFrames = false;             // draw composition card rectangles
+let segArticulate = false;            // dog=pixelated / rabbit=gestural rendering
+let segGrid = 8;                      // pixelation grid (screen px) for dog runs
+let segUnifyMode = 'off';             // 'off' | 'enclosed' | 'density'
+let segUnify = 0.3;                   // amount (gap-close tol / blur reach)
+let segUnifyInvert = false;           // figure the gaps
+=======
 let worldsUnify = 0.0;        // 0 = fragmented field, higher = boolean-union figures
 let worldsQuote = 0.0;        // fraction of union boundary rebuilt from member curve fragments
 let segSensitivity = 0.75;            // 0..1; higher = more detail (lower threshold)
 let segBlur = 1.4;                    // Gaussian sigma in pixels for pre-blur
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 
 // The overlay canvas hosts whatever the non-image modes draw. It sits on
 // top of the WebGL canvas with pointer-events disabled so OrbitControls
@@ -1225,7 +1600,25 @@ document.getElementById('blendMode').addEventListener('change', (e) => {
 
 // Render-mode handlers ------------------------------------------------------
 function setSpritesVisible(visible) {
+<<<<<<< HEAD
+  spritesBaseVisible = visible;
+  for (const sp of sprites) sp.visible = visible && pointShownP(sp.userData);
+}
+
+// Dim the sprites when they sit behind the linework overlay so the drawn
+// curves stay legible over their source images.
+function applyGhostOpacity() {
+  const ghosting = ghostImages && currentMode === 'linework';
+  for (const sp of sprites) {
+    if (sp.material) {
+      sp.material.opacity = ghosting ? ghostOpacity : 1.0;
+      sp.material.transparent = ghosting ? true : sp.material.transparent;
+      sp.material.needsUpdate = true;
+    }
+  }
+=======
   for (const sp of sprites) sp.visible = visible;
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 }
 
 function refreshModeControls() {
@@ -1245,7 +1638,12 @@ document.querySelectorAll('input[name="renderMode"]').forEach(el => {
     // With 1000+ sprites this makes orbiting dramatically faster, since the
     // GPU isn't redrawing every card each frame. Heatmap still overlays the
     // visible sprites, and images mode obviously needs them.
+<<<<<<< HEAD
+    setSpritesVisible(currentMode !== 'linework' || (ghostImages && currentMode === 'linework'));
+    applyGhostOpacity();
+=======
     setSpritesVisible(currentMode !== 'linework');
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     markOverlayDirty();
   });
 });
@@ -1295,6 +1693,117 @@ document.getElementById('worldsQuoteRange').addEventListener('input', (e) => {
   document.getElementById('worldsQuoteValue').textContent = worldsQuote.toFixed(2);
   markOverlayDirty();
 });
+<<<<<<< HEAD
+function applySpreadToScene() {
+  // dilation about the dataset centroid, expressed as a scene transform:
+  // world position of a child at p becomes c + sp*(p - c) for every object
+  // (sprites, markers, latent contours, volume) in one move
+  const sp = worldsSpread;
+  scene.scale.setScalar(sp);
+  scene.position.set(cx * (1 - sp), cy * (1 - sp), cz * (1 - sp));
+}
+document.getElementById('worldsSpreadRange').addEventListener('input', (e) => {
+  worldsSpread = parseFloat(e.target.value);
+  document.getElementById('worldsSpreadValue').textContent = worldsSpread.toFixed(2);
+  applySpreadToScene();
+  markOverlayDirty();
+});
+document.getElementById('showQuoteSources').addEventListener('change', (e) => {
+  showQuoteSources = e.target.checked;
+  markOverlayDirty();
+});
+document.getElementById('focusMode').addEventListener('change', (e) => {
+  focusMode = e.target.value;
+  focusChanged();
+});
+document.getElementById('focusPctRange').addEventListener('input', (e) => {
+  focusPct = parseFloat(e.target.value);
+  document.getElementById('focusPctValue').textContent = focusPct.toFixed(2);
+  focusChanged();
+});
+document.getElementById('layersAll').addEventListener('change', (e) => {
+  const boxes = document.querySelectorAll('#layerToggles input[type=checkbox]');
+  boxes.forEach(b => { if (b.checked !== e.target.checked) { b.checked = e.target.checked; } });
+  layerHidden.clear();
+  if (!e.target.checked) {
+    for (const p of POINTS) layerHidden.add(p.layer);
+  }
+  focusChanged();
+});
+document.getElementById('worldsFromLayers').addEventListener('change', (e) => {
+  worldsFromLayers = e.target.checked;
+  markOverlayDirty();
+});
+document.getElementById('worldsTightRange').addEventListener('input', (e) => {
+  worldsTight = parseFloat(e.target.value);
+  document.getElementById('worldsTightValue').textContent = worldsTight.toFixed(2);
+  markOverlayDirty();
+});
+document.getElementById('worldsMatchImages').addEventListener('change', (e) => {
+  worldsMatchImages = e.target.checked;
+  markOverlayDirty();
+});
+document.getElementById('worldsInvert').addEventListener('change', (e) => {
+  worldsInvert = e.target.checked;
+  markOverlayDirty();
+});
+document.getElementById('worldsOverImages').addEventListener('change', (e) => {
+  worldsOverImages = e.target.checked;
+  markOverlayDirty();
+});
+document.getElementById('heatmapInvert').addEventListener('change', (e) => {
+  heatmapInvert = e.target.checked;
+  markOverlayDirty();
+});
+document.getElementById('volumeGap').addEventListener('change', (e) => {
+  volumeGap = e.target.checked;
+  scheduleVolumeRebuild(0);
+});
+document.getElementById('gapCarveRange').addEventListener('input', (e) => {
+  gapCarve = parseFloat(e.target.value);
+  document.getElementById('gapCarveValue').textContent = gapCarve.toFixed(2);
+  if (volumeGap) scheduleVolumeRebuild(120);
+});
+document.getElementById('silhouetteSource').addEventListener('change', (e) => {
+  silhouetteSource = e.target.value;
+  resolveAllSilhouettes();
+});
+let perimeterOn = false, perimeterTight = 0.5, perimeterSmooth = 2, perimeterFill = 0.0;
+document.getElementById('perimeterToggle').addEventListener('change', (e) => {
+  perimeterOn = e.target.checked; markOverlayDirty(0);
+});
+document.getElementById('perimeterTightRange').addEventListener('input', (e) => {
+  perimeterTight = parseFloat(e.target.value);
+  document.getElementById('perimeterTightValue').textContent = perimeterTight.toFixed(2);
+  if (perimeterOn) markOverlayDirty(0);
+});
+document.getElementById('perimeterSmoothRange').addEventListener('input', (e) => {
+  perimeterSmooth = parseInt(e.target.value, 10);
+  document.getElementById('perimeterSmoothValue').textContent = String(perimeterSmooth);
+  if (perimeterOn) markOverlayDirty(0);
+});
+document.getElementById('perimeterFillRange').addEventListener('input', (e) => {
+  perimeterFill = parseFloat(e.target.value);
+  document.getElementById('perimeterFillValue').textContent = perimeterFill.toFixed(2);
+  if (perimeterOn) markOverlayDirty(0);
+});
+buildLayerPanel();
+buildCategoryPanel();
+document.getElementById('ghostImages').addEventListener('change', (e) => {
+  ghostImages = e.target.checked;
+  // spread is now global (scene and projections dilate together), so the
+  // comparison holds at any spread — no pin needed
+  setSpritesVisible(currentMode !== 'linework' || ghostImages);
+  applyGhostOpacity();
+  markOverlayDirty();
+});
+document.getElementById('ghostOpacityRange').addEventListener('input', (e) => {
+  ghostOpacity = parseFloat(e.target.value);
+  document.getElementById('ghostOpacityValue').textContent = ghostOpacity.toFixed(2);
+  applyGhostOpacity();
+});
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 document.getElementById('articulationSignalSelect').addEventListener('change', (e) => {
   ARTICULATION_SIGNAL = e.target.value;
   markOverlayDirty();
@@ -1327,6 +1836,37 @@ document.getElementById('segBlurRange').addEventListener('input', (e) => {
   document.getElementById('segBlurValue').textContent = segBlur.toFixed(1);
   markOverlayDirty();
 });
+<<<<<<< HEAD
+document.getElementById('segStraightenRange').addEventListener('input', (e) => {
+  segStraighten = parseFloat(e.target.value);
+  document.getElementById('segStraightenValue').textContent = segStraighten.toFixed(1);
+  markOverlayDirty();
+});
+document.getElementById('swatchFrames').addEventListener('change', (e) => {
+  swatchFrames = e.target.checked; markOverlayDirty();
+});
+document.getElementById('segArticulate').addEventListener('change', (e) => {
+  segArticulate = e.target.checked; markOverlayDirty();
+});
+document.getElementById('segGridRange').addEventListener('input', (e) => {
+  segGrid = parseInt(e.target.value, 10);
+  document.getElementById('segGridValue').textContent = String(segGrid);
+  if (segArticulate) markOverlayDirty();
+});
+document.getElementById('segUnifyMode').addEventListener('change', (e) => {
+  segUnifyMode = e.target.value; markOverlayDirty();
+});
+document.getElementById('segUnifyRange').addEventListener('input', (e) => {
+  segUnify = parseFloat(e.target.value);
+  document.getElementById('segUnifyValue').textContent = segUnify.toFixed(2);
+  if (segUnifyMode !== 'off') markOverlayDirty();
+});
+document.getElementById('segUnifyInvert').addEventListener('change', (e) => {
+  segUnifyInvert = e.target.checked;
+  if (segUnifyMode !== 'off') markOverlayDirty();
+});
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 
 controls.addEventListener('change', () => { markOverlayDirty(); });
 window.addEventListener('resize', () => {
@@ -1347,7 +1887,11 @@ renderer.domElement.addEventListener('mousemove', (e) => {
   const hits = raycaster.intersectObjects(sprites);
   if (hits.length > 0) {
     const p = hits[0].object.userData;
+<<<<<<< HEAD
+    tooltip.textContent = `${p.id} · ${p.per} · ${p.cat}/${p.sub} · cluster ${p.clu}`;
+=======
     tooltip.textContent = `${p.id} · ${p.cat}/${p.sub} · ${p.era} · cluster ${p.clu}`;
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     tooltip.style.left = (e.clientX + 12) + 'px';
     tooltip.style.top  = (e.clientY + 12) + 'px';
     tooltip.style.display = 'block';
@@ -1408,6 +1952,48 @@ document.getElementById('copy').onclick = async () => {
   setTimeout(() => { btn.textContent = original; }, 2000);
 };
 
+<<<<<<< HEAD
+// Copy the full camera (position, target, lens/fov) as a compact JSON string,
+// to paste into the constellation viewer's "match worlds view" box. Both
+// viewers place points at the same raw UMAP coordinates and frame from the same
+// centroid, so position + target + fov reproduce this exact perspective there.
+document.getElementById('copyCam').onclick = async () => {
+  const cam = {
+    pos: [camera.position.x, camera.position.y, camera.position.z].map(v => +v.toFixed(5)),
+    tgt: [controls.target.x, controls.target.y, controls.target.z].map(v => +v.toFixed(5)),
+    fov: +camera.fov.toFixed(3),
+    w: Math.round(SETTINGS.width),
+    h: Math.round(SETTINGS.height),
+  };
+  const text = JSON.stringify(cam);
+  const out = document.getElementById('camOut');
+  if (out) { out.value = text; out.focus(); out.select(); }
+  const btn = document.getElementById('copyCam');
+  const original = btn.textContent;
+  let copied = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    }
+  } catch (e) { /* fall through to the readout box */ }
+  if (!copied) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      copied = true;
+    } catch (e) { /* the readout box is still filled and selected */ }
+  }
+  btn.textContent = copied ? 'copied \u2014 paste in constellation' : 'select the box & copy';
+  setTimeout(() => { btn.textContent = original; }, 2400);
+};
+
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 // ---------------------------------------------------------------------------
 // SVG export at current camera angle.
 //
@@ -1622,9 +2208,17 @@ function projectVisiblePoints(W, H) {
   const tmp = new THREE.Vector3();
   let distMin = Infinity, distMax = -Infinity;
   let culledBehind = 0, culledOutside = 0;
+<<<<<<< HEAD
+  const spv = (typeof worldsSpread !== 'undefined') ? worldsSpread : 1.0;
+  for (let i = 0; i < POINTS.length; i++) {
+    const p = POINTS[i];
+    if (!pointShownP(p)) { continue; }
+    tmp.set(cx + (p.x - cx) * spv, cy + (p.y - cy) * spv, cz + (p.z - cz) * spv);
+=======
   for (let i = 0; i < POINTS.length; i++) {
     const p = POINTS[i];
     tmp.set(p.x, p.y, p.z);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     const distAlongForward = tmp.clone().sub(camPos).dot(camForward);
     if (distAlongForward <= exportCam.near) { culledBehind++; continue; }
     const worldDist = tmp.distanceTo(camPos);
@@ -1690,8 +2284,15 @@ function projectedContourSegments(exportCam, W, H) {
   return out;
 }
 
+<<<<<<< HEAD
+let svgForceImage = false;
 function buildSVGFromCurrentView() {
   const W = SETTINGS.width, H = SETTINGS.height;
+  svgForceImage = (currentMode === 'images');
+=======
+function buildSVGFromCurrentView() {
+  const W = SETTINGS.width, H = SETTINGS.height;
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   const pv = projectVisiblePoints(W, H);
   const { projected, exportCam, elev_deg, azim_deg, distMin, distMax,
           culledBehind, culledOutside } = pv;
@@ -1780,6 +2381,33 @@ function buildSVGFromCurrentView() {
     }
   }
 
+<<<<<<< HEAD
+  // Perimeter outlines (matches on-screen "perimeter outline per layer"):
+  // isocontour of each visible layer's projected points, one <g> per layer.
+  if (typeof perimeterOn !== 'undefined' && perimeterOn) {
+    const byLayer = perimeterPathsByLayer(projected, W, H);
+    for (const [lab, paths] of byLayer) {
+      const col = layerColorHex(lab);
+      const lname = "perimeter_" + lab;
+      addLayer(lname);
+      for (const pp of paths) {
+        if (pp.length < 3) continue;
+        let d = `M ${pp[0][0].toFixed(2)} ${pp[0][1].toFixed(2)}`;
+        for (let i = 1; i < pp.length; i++) d += ` L ${pp[i][0].toFixed(2)} ${pp[i][1].toFixed(2)}`;
+        d += ' Z';
+        if (perimeterFill > 0.001) {
+          layers.get(lname).push(
+            `<path d="${d}" fill="${col}" fill-opacity="${perimeterFill.toFixed(2)}" stroke="none"/>`);
+        }
+        layers.get(lname).push(
+          `<path d="${d}" fill="none" stroke="${col}" stroke-width="1.6" ` +
+          `stroke-linejoin="round" stroke-linecap="round"/>`);
+      }
+    }
+  }
+
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   // Diagnostic stamp (its own layer; hide in Illustrator if unwanted)
   addLayer("view_info");
   const infoFontSize = Math.max(10, Math.min(W, H) * 0.012);
@@ -1822,7 +2450,15 @@ function buildHeatmapSVG() {
   const gridW = Math.min(220, Math.max(60, Math.round(W / 8)));
   const gridH = Math.min(220, Math.max(60, Math.round(H / 8)));
   const cellW = W / gridW, cellH = H / gridH;
+<<<<<<< HEAD
+  let grid = computeDensityGrid(pv.projected, W, H, gridW, gridH, heatmapBandwidth);
+  if (heatmapInvert) {
+    grid = gapFieldFrom(grid,
+      computeDensityGrid(pv.projected, W, H, gridW, gridH, heatmapBandwidth * 3));
+  }
+=======
   const grid = computeDensityGrid(pv.projected, W, H, gridW, gridH, heatmapBandwidth);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 
   let maxV = 0;
   for (let i = 0; i < grid.length; i++) if (grid[i] > maxV) maxV = grid[i];
@@ -2173,15 +2809,41 @@ function buildLineworkSVG() {
       layers.get("protocol_swatches").push(
         `<rect x="${r.xmin.toFixed(2)}" y="${r.ymin.toFixed(2)}" ` +
         `width="${rw}" height="${rh}" fill="#ffffff" ` +
+<<<<<<< HEAD
+        (swatchFrames
+          ? `stroke="#000000" stroke-width="${(lineworkWeight * 0.7).toFixed(2)}"/>`
+          : `stroke="none"/>`)
+=======
         `stroke="#000000" stroke-width="${(lineworkWeight * 0.7).toFixed(2)}"/>`
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
       );
       visibleCount++;
     }
     const segC = computeSegmentationPaths(900, W, H);
+<<<<<<< HEAD
+    if (segC) {
+      addLayer("amalgamation_lines");
+      const sxc = W / segC.width, syc = H / segC.height;
+      const fp = segC.fillPaths || [];
+      const sp = segC.strokePaths || segC.paths || [];
+      if (fp.length) {
+        let d = '';
+        for (const pts of fp) {
+          if (pts.length < 3) continue;
+          d += ` M ${(pts[0][0] * sxc).toFixed(2)},${(pts[0][1] * syc).toFixed(2)}`;
+          for (let i = 1; i < pts.length; i++) d += ` L ${(pts[i][0] * sxc).toFixed(2)},${(pts[i][1] * syc).toFixed(2)}`;
+          d += ' Z';
+        }
+        if (d) layers.get("amalgamation_lines").push(
+          `<path d="${d.trim()}" fill="#000000" fill-rule="evenodd" stroke="none"/>`);
+      }
+      for (const pts of sp) {
+=======
     if (segC && segC.paths.length > 0) {
       addLayer("amalgamation_lines");
       const sxc = W / segC.width, syc = H / segC.height;
       for (const pts of segC.paths) {
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
         if (pts.length < 2) continue;
         const parts = [`M ${(pts[0][0] * sxc).toFixed(2)},${(pts[0][1] * syc).toFixed(2)}`];
         for (let i = 1; i < pts.length; i++) {
@@ -2289,12 +2951,224 @@ function buildLineworkSVG() {
 // Canvas overlay rendering for live preview of heatmap and linework modes.
 // Mirrors the SVG builders above but draws to 2D canvas for speed.
 // ---------------------------------------------------------------------------
+<<<<<<< HEAD
+function gapFieldFrom(dense, envelope) {
+  // envelope - density, clamped at 0: nonzero only in the enclosed emptiness
+  // INSIDE the cloud, never in the open background (envelope -> 0 out there).
+  let dMax = 0, eMax = 0;
+  for (let i = 0; i < dense.length; i++) {
+    if (dense[i] > dMax) dMax = dense[i];
+    if (envelope[i] > eMax) eMax = envelope[i];
+  }
+  if (dMax <= 0 || eMax <= 0) return dense;
+  const out = new Float32Array(dense.length);
+  for (let i = 0; i < dense.length; i++) {
+    const env = (envelope[i] / eMax) * dMax * 0.85;
+    const v = env - dense[i];
+    out[i] = v > 0 ? v : 0;
+  }
+  return out;
+}
+
+function drawWorldsGapPolygons(ctx, unions, W, H, depthRange) {
+  // Rasterize the union figures to a coarse mask, take a wide blur as the
+  // composition's envelope, contour (envelope - mask): the space BETWEEN the
+  // figures becomes the drawn polygons; the figures themselves vanish.
+  const gs = 3;
+  const gw = Math.max(40, Math.round(W / gs)), gh = Math.max(40, Math.round(H / gs));
+  const off = document.createElement('canvas'); off.width = gw; off.height = gh;
+  const octx = off.getContext('2d');
+  octx.fillStyle = '#000'; octx.fillRect(0, 0, gw, gh);
+  octx.fillStyle = '#fff';
+  const sx = gw / W, sy = gh / H;
+  for (const u of unions) {
+    octx.beginPath();
+    for (const c of u.contours) {
+      if (!c || c.length < 3) continue;
+      for (let i = 0; i < c.length; i++) {
+        const X = c[i][0] * sx, Y = c[i][1] * sy;
+        if (i === 0) octx.moveTo(X, Y); else octx.lineTo(X, Y);
+      }
+      octx.closePath();
+    }
+    octx.fill('evenodd');
+  }
+  const imd = octx.getImageData(0, 0, gw, gh);
+  const mask = new Float32Array(gw * gh);
+  for (let i = 0, j = 0; i < mask.length; i++, j += 4) mask[i] = imd.data[j] / 255;
+  const soft = gaussianBlurFloat(mask, gw, gh, 1.2);
+  const env = gaussianBlurFloat(mask, gw, gh, Math.max(6, Math.min(gw, gh) * 0.08));
+  const gap = gapFieldFrom(soft, env);
+  let gMax = 0;
+  for (let i = 0; i < gap.length; i++) if (gap[i] > gMax) gMax = gap[i];
+  if (gMax <= 0) return;
+  const cellW = W / gw, cellH = H / gh;
+  const levels = [0.35 * gMax, 0.6 * gMax];
+  ctx.save();
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  for (let li = 0; li < levels.length; li++) {
+    const segs = marchingSquaresAt(gap, gw, gh, levels[li], cellW, cellH);
+    const paths = stitchSegmentsToPaths(segs, Math.min(cellW, cellH) * 0.6);
+    if (!paths.length) continue;
+    ctx.beginPath();
+    for (const pts of paths) {
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.closePath();
+    }
+    ctx.fillStyle = (li === 0) ? '#ffffff' : '#f2f2f2';
+    ctx.fill('evenodd');
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = Math.max(0.5, lineworkWeight * (li === 0 ? 1.0 : 0.6));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function perimeterChaikin(poly, passes) {
+  let p = poly;
+  for (let s = 0; s < passes; s++) {
+    if (p.length < 3) break;
+    const out = [];
+    for (let i = 0; i < p.length; i++) {
+      const a = p[i], b = p[(i + 1) % p.length];
+      out.push([a[0]*0.75 + b[0]*0.25, a[1]*0.75 + b[1]*0.25]);
+      out.push([a[0]*0.25 + b[0]*0.75, a[1]*0.25 + b[1]*0.75]);
+    }
+    p = out;
+  }
+  return p;
+}
+// The perimeter outline: density isocontour of the layer's screen points.
+// Closed by construction, cannot self-intersect. tightness -> smaller kernel +
+// higher level (hugs); loose -> big kernel + low level (one enclosing blob).
+function perimeterPathsFor(pts, W, H) {
+  if (pts.length < 3) return [];
+  const minDim = Math.min(W, H);
+  const gw = Math.max(48, Math.min(240, Math.round(W / 4)));
+  const gh = Math.max(48, Math.min(240, Math.round(H / 4)));
+  const cellW = W / gw, cellH = H / gh;
+  const bw = minDim * (0.13 - 0.10 * perimeterTight);
+  const grid = computeDensityGrid(pts, W, H, gw, gh, bw);
+  let maxV = 0;
+  for (let i = 0; i < grid.length; i++) if (grid[i] > maxV) maxV = grid[i];
+  if (maxV <= 1e-9) return [];
+  const level = maxV * (0.09 + 0.16 * perimeterTight);
+  const segs = marchingSquaresAt(grid, gw, gh, level, cellW, cellH);
+  const raw = stitchSegmentsToPaths(segs, Math.min(cellW, cellH) * 0.5);
+  const out = [];
+  for (const path of raw) {
+    if (path.length < 4) continue;
+    out.push(perimeterChaikin(path, perimeterSmooth));
+  }
+  return out;
+}
+function layerColorHex(lab) {
+  for (const p of POINTS) if (p.layer === lab && p.color) return p.color;
+  return '#ff5a3c';
+}
+function perimeterPathsByLayer(projected, W, H) {
+  const groups = new Map();
+  for (const q of projected) {
+    const p = q.p;
+    if (!pointShownP(p)) continue;
+    let arr = groups.get(p.layer);
+    if (!arr) { arr = []; groups.set(p.layer, arr); }
+    arr.push({ sx: q.sx, sy: q.sy });
+  }
+  const byLayer = new Map();
+  for (const [lab, pts] of groups) {
+    const paths = perimeterPathsFor(pts, W, H);
+    if (paths.length) byLayer.set(lab, paths);
+  }
+  return byLayer;
+}
+function drawPerimeterCurves(ctx, projected, W, H) {
+  if (!perimeterOn) return;
+  const byLayer = perimeterPathsByLayer(projected, W, H);
+  ctx.save();
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  for (const [lab, paths] of byLayer) {
+    const col = layerColorHex(lab);
+    if (perimeterFill > 0.001) {
+      ctx.globalAlpha = perimeterFill; ctx.fillStyle = col;
+      ctx.beginPath();
+      for (const pp of paths) {
+        ctx.moveTo(pp[0][0], pp[0][1]);
+        for (let i = 1; i < pp.length; i++) ctx.lineTo(pp[i][0], pp[i][1]);
+        ctx.closePath();
+      }
+      ctx.fill('evenodd');
+      ctx.globalAlpha = 1.0;
+    }
+    ctx.strokeStyle = col; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    for (const pp of paths) {
+      ctx.moveTo(pp[0][0], pp[0][1]);
+      for (let i = 1; i < pp.length; i++) ctx.lineTo(pp[i][0], pp[i][1]);
+      ctx.closePath();
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawWorldsOutlineOverlay(ctx, W, H) {
+  // Live registration check: the worlds union boundaries (and their quote
+  // source threads) drawn over the images mode at the SAME camera, so the
+  // curves are visibly anchored to the photographs they derive from.
+  if (contentPolygons.size === 0) return;
+  const res = computeWorlds(W, H);
+  const unions = res.unions, quoteMarks = res.quoteMarks;
+  if (!unions || !unions.length) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(200,60,60,0.9)';
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.fillText('worlds overlay: raise worlds unify > 0 to form figures', 14, 22);
+    ctx.restore();
+    return;
+  }
+  ctx.save();
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(255,70,50,0.95)';
+  ctx.lineWidth = 1.4;
+  for (const u of unions) {
+    ctx.beginPath();
+    for (const c of u.contours) {
+      if (!c || c.length < 3) continue;
+      for (let i = 0; i < c.length; i++) {
+        if (i === 0) ctx.moveTo(c[i][0], c[i][1]); else ctx.lineTo(c[i][0], c[i][1]);
+      }
+      ctx.closePath();
+    }
+    ctx.stroke();
+  }
+  if (quoteMarks && quoteMarks.length) {
+    ctx.strokeStyle = 'rgba(255,70,50,0.35)';
+    ctx.lineWidth = 0.7;
+    for (const m of quoteMarks) {
+      ctx.beginPath(); ctx.moveTo(m.mx, m.my); ctx.lineTo(m.sx, m.sy); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 function renderHeatmapToCanvas(ctx, projected, W, H) {
   if (projected.length === 0) return;
   const gridW = Math.min(180, Math.max(40, Math.round(W / 10)));
   const gridH = Math.min(180, Math.max(40, Math.round(H / 10)));
   const cellW = W / gridW, cellH = H / gridH;
+<<<<<<< HEAD
+  let grid = computeDensityGrid(projected, W, H, gridW, gridH, heatmapBandwidth);
+  if (heatmapInvert) {
+    grid = gapFieldFrom(grid,
+      computeDensityGrid(projected, W, H, gridW, gridH, heatmapBandwidth * 3));
+  }
+=======
   const grid = computeDensityGrid(projected, W, H, gridW, gridH, heatmapBandwidth);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   let maxV = 0;
   for (let i = 0; i < grid.length; i++) if (grid[i] > maxV) maxV = grid[i];
   if (maxV <= 0) return;
@@ -2438,7 +3312,11 @@ function renderLineworkToCanvas(ctx, projected, exportCam, W, H) {
           : `precomputing content polygons... ${edgeMapsReady}/${edgeMapsTotal}`,
         20, 30);
     } else {
+<<<<<<< HEAD
+      const { forms, links, bridges, unions, depthRange, quoteMarks } = computeWorlds(W, H);
+=======
       const { forms, links, bridges, unions, depthRange } = computeWorlds(W, H);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
       const minDim = Math.min(W, H);
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
@@ -2453,7 +3331,13 @@ function renderLineworkToCanvas(ctx, projected, exportCam, W, H) {
         ctx.stroke();
       }
       ctx.globalAlpha = 1.0;
+<<<<<<< HEAD
+      if (worldsInvert && worldsUnify > 0.001 && unions.length) {
+        drawWorldsGapPolygons(ctx, unions, W, H, depthRange);
+      } else if (worldsUnify > 0.001 && unions.length) {
+=======
       if (worldsUnify > 0.001 && unions.length) {
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
         // --- boolean-union figures: connected components, far → near ---
         for (const u of unions) {
           ctx.fillStyle = (u.pattern === 'solid') ? '#ffffff' : getStackedPattern(ctx, u.pattern);
@@ -2467,6 +3351,35 @@ function renderLineworkToCanvas(ctx, projected, exportCam, W, H) {
           const dw = worldsDepthWeight(u.depth, depthRange, lineworkWeight);
           ctx.strokeStyle = dw.stroke; ctx.lineWidth = dw.w; ctx.stroke();
         }
+<<<<<<< HEAD
+        if (worldsQuote > 0.001 && fragLib.size === 0) {
+          ctx.save();
+          ctx.fillStyle = 'rgba(200,60,60,0.95)';
+          ctx.font = '11px ui-monospace, monospace';
+          ctx.fillText('quote inert: no curve library matches this dataset — re-run extract_geometry.py', 14, 44);
+          ctx.restore();
+        }
+        // provenance debug: red leaders from each quoted segment to the
+        // member it was quoted from, dot at the source
+        if (showQuoteSources && quoteMarks && quoteMarks.length) {
+          ctx.save();
+          ctx.strokeStyle = '#cc2222';
+          ctx.fillStyle = '#cc2222';
+          ctx.lineWidth = 0.8;
+          ctx.globalAlpha = 0.85;
+          for (const m of quoteMarks) {
+            ctx.beginPath();
+            ctx.moveTo(m.mx, m.my);
+            ctx.lineTo(m.sx, m.sy);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(m.sx, m.sy, 2.6, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.restore();
+        }
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
         // medoid inner detail on top for character, depth-weighted + lighter
         for (const f of forms) {
           if (!f.isMedoid || !f.inner || !f.inner.length) continue;
@@ -2502,6 +3415,30 @@ function renderLineworkToCanvas(ctx, projected, exportCam, W, H) {
         }
         const f = it.f, S = f.size, cx = f.cx, cy = f.cy;
         if (!f.dom || f.dom.length < 3) continue;
+<<<<<<< HEAD
+        // footprint match: while ghosting, draw at the sprite's projected
+        // rect so the silhouette registers 1:1 on its source image
+        let SX = S, SY = S;
+        if (ghostImages && f.idx != null && POINTS[f.idx]) {
+          const pm = POINTS[f.idx];
+          const fovr = camera.fov * Math.PI / 180;
+          const spf = (typeof worldsSpread !== 'undefined') ? worldsSpread : 1.0;
+          const sH = (baseScale * userScale * spf) * (H / 2) /
+                     (Math.max(1e-6, f.depth) * Math.tan(fovr / 2));
+          SY = sH;
+          SX = sH * (pm.ar || 1);
+        }
+        ctx.beginPath();
+        for (let i = 0; i < f.dom.length; i++) {
+          const dx2 = cx + (f.dom[i][0] - 0.5) * SX, dy2 = cy + (f.dom[i][1] - 0.5) * SY;
+          if (i === 0) ctx.moveTo(dx2, dy2); else ctx.lineTo(dx2, dy2);
+        }
+        ctx.closePath();
+        if (!ghostImages) {
+          ctx.fillStyle = (f.pattern === 'solid') ? '#ffffff' : getStackedPattern(ctx, f.pattern);
+          ctx.fill();
+        }
+=======
         ctx.beginPath();
         for (let i = 0; i < f.dom.length; i++) {
           const dx2 = cx + (f.dom[i][0] - 0.5) * S, dy2 = cy + (f.dom[i][1] - 0.5) * S;
@@ -2510,6 +3447,7 @@ function renderLineworkToCanvas(ctx, projected, exportCam, W, H) {
         ctx.closePath();
         ctx.fillStyle = (f.pattern === 'solid') ? '#ffffff' : getStackedPattern(ctx, f.pattern);
         ctx.fill();
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
         const dwf = worldsDepthWeight(f.depth, depthRange, lineworkWeight);
         if (f.isMedoid) {
           // primary: bold outline + full inner structure (recognizable, rich)
@@ -2522,7 +3460,11 @@ function renderLineworkToCanvas(ctx, projected, exportCam, W, H) {
               if (!c || c.length < 2) continue;
               ctx.beginPath();
               for (let i = 0; i < c.length; i++) {
+<<<<<<< HEAD
+                const dx2 = cx + (c[i][0] - 0.5) * SX, dy2 = cy + (c[i][1] - 0.5) * SY;
+=======
                 const dx2 = cx + (c[i][0] - 0.5) * S, dy2 = cy + (c[i][1] - 0.5) * S;
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
                 if (i === 0) ctx.moveTo(dx2, dy2); else ctx.lineTo(dx2, dy2);
               }
               ctx.stroke();
@@ -2602,6 +3544,42 @@ function renderLineworkToCanvas(ctx, projected, exportCam, W, H) {
       const w = r.xmax - r.xmin, h = r.ymax - r.ymin;
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(r.xmin, r.ymin, w, h);
+<<<<<<< HEAD
+      if (swatchFrames) {
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = lineworkWeight * 0.7;
+        ctx.strokeRect(r.xmin, r.ymin, w, h);
+      }
+    }
+    const segC = computeSegmentationPaths(800);
+    if (segC) {
+      const sxc = W / segC.width, syc = H / segC.height;
+      const fp = segC.fillPaths || [];
+      const sp = segC.strokePaths || segC.paths || [];
+      if (fp.length) {
+        ctx.fillStyle = '#000000';
+        ctx.beginPath();
+        for (const pts of fp) {
+          if (pts.length < 3) continue;
+          ctx.moveTo(pts[0][0] * sxc, pts[0][1] * syc);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0] * sxc, pts[i][1] * syc);
+          ctx.closePath();
+        }
+        ctx.fill('evenodd');
+      }
+      if (sp.length) {
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = lineworkWeight * 1.2;
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath();
+        for (const pts of sp) {
+          if (pts.length < 2) continue;
+          ctx.moveTo(pts[0][0] * sxc, pts[0][1] * syc);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0] * sxc, pts[i][1] * syc);
+        }
+        ctx.stroke();
+      }
+=======
       ctx.strokeStyle = '#000000';
       ctx.lineWidth = lineworkWeight * 0.7;
       ctx.strokeRect(r.xmin, r.ymin, w, h);
@@ -2622,6 +3600,7 @@ function renderLineworkToCanvas(ctx, projected, exportCam, W, H) {
         }
       }
       ctx.stroke();
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     }
   } else if (lineworkStyle === 'all') {
     const sorted = rects.slice().sort((a, b) => b.depth - a.depth);
@@ -2688,7 +3667,15 @@ function redrawOverlay() {
   const ctx = overlayCanvas.getContext('2d');
   const w = W(), h = H();
   ctx.clearRect(0, 0, w, h);
+<<<<<<< HEAD
+  if (currentMode === 'images') {
+    if (worldsOverImages) drawWorldsOutlineOverlay(ctx, w, h);
+    if (perimeterOn) drawPerimeterCurves(ctx, projectVisiblePoints(w, h).projected, w, h);
+    return;
+  }
+=======
   if (currentMode === 'images') return;
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 
   const pv = projectVisiblePoints(w, h);
   if (currentMode === 'heatmap') {
@@ -2696,20 +3683,41 @@ function redrawOverlay() {
   } else if (currentMode === 'linework') {
     renderLineworkToCanvas(ctx, pv.projected, pv.exportCam, w, h);
   }
+<<<<<<< HEAD
+  if (perimeterOn && currentMode !== 'heatmap') {
+    drawPerimeterCurves(ctx, pv.projected, w, h);
+  }
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 }
 
 function markerSVG(x, y, r, p, opAttr, strokeAttr, opacity) {
   const shape = SETTINGS.shape;
+<<<<<<< HEAD
+  const forceImg = (typeof svgForceImage !== 'undefined') && svgForceImage;
+  const imgB64 = p.exp_img || (forceImg ? p.img : null);
+  const imgAr = p.exp_img ? p.exp_ar : (p.ar || 1.0);
+  if ((shape === "image" || forceImg) && imgB64) {
+    const max_dim = 2 * r;
+    let w, h;
+    if (imgAr >= 1) { w = max_dim; h = max_dim / imgAr; }
+    else { h = max_dim; w = max_dim * imgAr; }
+=======
   if (shape === "image" && p.exp_img) {
     const max_dim = 2 * r;
     let w, h;
     if (p.exp_ar >= 1) { w = max_dim; h = max_dim / p.exp_ar; }
     else { h = max_dim; w = max_dim * p.exp_ar; }
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     const opImg = opacity < 1 ? ` opacity="${opacity.toFixed(2)}"` : '';
     return `<image x="${(x - w/2).toFixed(2)}" y="${(y - h/2).toFixed(2)}" ` +
            `width="${w.toFixed(2)}" height="${h.toFixed(2)}" ` +
            `preserveAspectRatio="xMidYMid meet" ` +
+<<<<<<< HEAD
+           `xlink:href="data:image/png;base64,${imgB64}"${opImg}/>`;
+=======
            `xlink:href="data:image/png;base64,${p.exp_img}"${opImg}/>`;
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   }
   if (shape === "square") {
     return `<rect x="${(x-r).toFixed(2)}" y="${(y-r).toFixed(2)}" ` +
@@ -3610,7 +4618,11 @@ function projectAndFitWorlds(W, H) {
   const tmp = new THREE.Vector3();
   const raw = [];
   for (let i = 0; i < POINTS.length; i++) {
+<<<<<<< HEAD
+    const p = POINTS[i]; if (!pointShownP(p)) continue; tmp.set(p.x, p.y, p.z);
+=======
     const p = POINTS[i]; tmp.set(p.x, p.y, p.z);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     const along = tmp.clone().sub(camPos).dot(camForward);
     if (along <= exportCam.near) continue;
     const wd = tmp.distanceTo(camPos);
@@ -3661,8 +4673,19 @@ function projectWorldsPerspective(W, H) {
   const tmp = new THREE.Vector3();
   const proj = new Array(POINTS.length).fill(null);
   const depths = [];
+<<<<<<< HEAD
+  // worlds spread: dilate latent positions about the dataset centroid so
+  // worlds separate on screen. Projection-only — the underlying UMAP and
+  // every other mode keep true distances.
+  const sp = (typeof worldsSpread !== 'undefined') ? worldsSpread : 1.0;
+  for (let i = 0; i < POINTS.length; i++) {
+    const p = POINTS[i];
+    if (!pointShownP(p)) { continue; }
+    tmp.set(cx + (p.x - cx) * sp, cy + (p.y - cy) * sp, cz + (p.z - cz) * sp);
+=======
   for (let i = 0; i < POINTS.length; i++) {
     const p = POINTS[i]; tmp.set(p.x, p.y, p.z);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     const along = tmp.clone().sub(camPos).dot(camForward);
     if (along <= exportCam.near) continue;   // behind camera
     const wd = tmp.distanceTo(camPos);
@@ -3746,6 +4769,30 @@ function ringSimplifySafe(ring, eps) {
 }
 
 // Scanline-fill a polygon (grid coords) into a binary mask.
+<<<<<<< HEAD
+function fillPolyFloatAdd(field, gw, gh, pts, val) {
+  if (!pts || pts.length < 3) return;
+  let ymin = Infinity, ymax = -Infinity;
+  for (const p of pts) { if (p[1] < ymin) ymin = p[1]; if (p[1] > ymax) ymax = p[1]; }
+  ymin = Math.max(0, Math.floor(ymin)); ymax = Math.min(gh - 1, Math.ceil(ymax));
+  for (let y = ymin; y <= ymax; y++) {
+    const yc = y + 0.5; const xs = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      if ((a[1] <= yc && b[1] > yc) || (b[1] <= yc && a[1] > yc)) {
+        xs.push(a[0] + (yc - a[1]) / (b[1] - a[1]) * (b[0] - a[0]));
+      }
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const x0 = Math.max(0, Math.ceil(xs[k] - 0.5)), x1 = Math.min(gw - 1, Math.floor(xs[k + 1] - 0.5));
+      for (let x = x0; x <= x1; x++) field[y * gw + x] += val;
+    }
+  }
+}
+
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 function fillPolyMask(mask, gw, gh, pts) {
   if (!pts || pts.length < 3) return;
   let ymin = Infinity, ymax = -Infinity;
@@ -3954,11 +5001,40 @@ function rasterUnion(mem, unify, minDim) {
   const gscale = Math.min(GMAX / bw, GMAX / bh, 2.5);
   const gw = Math.max(8, Math.ceil(bw * gscale)), gh = Math.max(8, Math.ceil(bh * gscale));
   const mask = new Uint8Array(gw * gh);
+<<<<<<< HEAD
+  const field = new Float32Array(gw * gh);          // soft-union scalar field
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   const owner = new Int32Array(gw * gh).fill(-1);   // member index per cell, -1 = generated
   const toG = (m, p) => [ (m.cx + (p[0]-0.5)*m.size - xmn) * gscale, (m.cy + (p[1]-0.5)*m.size - ymn) * gscale ];
   for (let mi = 0; mi < mem.length; mi++) {
     const m = mem[mi], d = m.dom; if (!d || d.length < 3) continue;
     const poly = d.map(p => toG(m, p));
+<<<<<<< HEAD
+    fillPolyMask(mask, gw, gh, poly);
+    fillPolyMaskOwner(owner, gw, gh, poly, mi);
+    fillPolyFloatAdd(field, gw, gh, poly, 1.0);
+  }
+  // --- soft-union (smooth-min / metaball) ----------------------------------
+  // Blur the additive member field by a REACH derived from unify: nearby
+  // members' falloffs sum above the threshold in the gap between them, forming
+  // a proportionate fillet (a smooth boolean union), instead of a fat straight
+  // chord neck. The iso-level (TIGHTNESS) sets how closely the boundary hugs
+  // the member cores. No morphological dilation, so no outward bloat.
+  const tight = (typeof worldsTight !== 'undefined') ? worldsTight : 0.5;
+  const reachPx = Math.pow(unify, 1.15) * minDim * 0.30;   // fillet span
+  const sigma = Math.max(0.6, reachPx * gscale);
+  const blurred = gaussianBlurFloat(field, gw, gh, sigma);
+  let fmax = 0;
+  for (let i = 0; i < blurred.length; i++) if (blurred[i] > fmax) fmax = blurred[i];
+  const closed = new Uint8Array(gw * gh);
+  if (fmax > 1e-9) {
+    // level rises with tightness (hug cores) and eases down as reach grows so
+    // that widening the fillet doesn't also erode the members.
+    const level = fmax * (0.30 + 0.55 * tight) * (1.0 - 0.18 * Math.min(1, unify));
+    for (let i = 0; i < closed.length; i++) closed[i] = blurred[i] >= level ? 1 : 0;
+  }
+=======
     fillPolyMask(mask, gw, gh, poly); fillPolyMaskOwner(owner, gw, gh, poly, mi);
   }
   const reach = Math.pow(unify, 1.5) * minDim * 0.7;
@@ -3988,6 +5064,7 @@ function rasterUnion(mem, unify, minDim) {
   }
   const closeR = Math.max(0, Math.round(gscale * (unify * unify * 3.2)));
   const closed = closeMaskBin(mask, gw, gh, closeR);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   const lm = labelMask(closed, gw, gh);
   const depthSum = new Float64Array(lm.n), depthCnt = new Int32Array(lm.n);
   for (const m of mem) {
@@ -4107,6 +5184,38 @@ function worldsDepthWeight(depth, dr, base) {
 // fragments of that world's own members: the region ends up literally bounded
 // by quoted geometry from its corpus. Chord-logic — fragments join by
 // adjacency at segment endpoints, no interpolated skin.
+<<<<<<< HEAD
+// Silhouette source: which polygon set feeds the worlds / composition modes.
+//   auto    — sidecar figural masks when present, else border-flood image
+//             masks traced live from the pixels, else legacy Sobel isolines
+//   sidecar — extract_geometry.py masks only (empty until re-extracted for
+//             the current dataset ids)
+//   flood   — border-flood figure/ground masks from the image pixels
+//   grad    — legacy Sobel gradient isolines
+let silhouetteSource = 'auto';
+const sidecarPolys = new Map();
+const floodPolys = new Map();
+const gradPolys = new Map();
+const salPolys = new Map();   // DINO-attention salience polygons (extract_saliency.py)
+let sidecarMatched = 0;
+function resolveSilhouetteFor(id) {
+  const pick =
+    (silhouetteSource === 'salience') ? salPolys.get(id)    :
+    (silhouetteSource === 'sidecar')  ? sidecarPolys.get(id) :
+    (silhouetteSource === 'flood')    ? floodPolys.get(id)   :
+    (silhouetteSource === 'grad')     ? gradPolys.get(id)    :
+    (sidecarPolys.get(id) || floodPolys.get(id) || gradPolys.get(id));
+  if (pick && pick.length) contentPolygons.set(id, pick);
+  else contentPolygons.delete(id);
+}
+function resolveAllSilhouettes() {
+  contentPolygons.clear();
+  for (const p of POINTS) resolveSilhouetteFor(p.id);
+  markOverlayDirty();
+}
+
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 const fragLib = new Map();   // p.id -> [{pts, desc:Float32Array, c, t, k}]
 
 function registerSidecarGeometry(p) {
@@ -4115,7 +5224,12 @@ function registerSidecarGeometry(p) {
   const polys = [];
   if (g.sil) for (const s of g.sil) if (s && s.length >= 3) polys.push(s);
   if (g.inner) for (const s of g.inner) if (s && s.length >= 3) polys.push(s);
+<<<<<<< HEAD
+  if (polys.length) { sidecarPolys.set(p.id, polys); sidecarMatched++; }
+  if (g.sal) { const sp = []; for (const s of g.sal) if (s && s.length >= 3) sp.push(s); if (sp.length) salPolys.set(p.id, sp); }
+=======
   if (polys.length) contentPolygons.set(p.id, polys);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   if (g.frags && g.frags.length) {
     const entries = [];
     for (const f of g.frags) {
@@ -4188,6 +5302,16 @@ function quoteCandidatesByLab(labels) {
     const lab = labels[i];
     if (!map.has(lab)) map.set(lab, []);
     const arr = map.get(lab);
+<<<<<<< HEAD
+    for (const e of entries) arr.push({ pts: e.pts, desc: e.desc, c: e.c, t: e.t, k: e.k, srcIdx: i });
+  }
+  // cap pool size so per-frame matching stays cheap
+  for (const [lab, arr] of map) {
+    if (arr.length > 720) {
+      const step = arr.length / 720;
+      const sub = [];
+      for (let i = 0; i < 720; i++) sub.push(arr[Math.floor(i * step)]);
+=======
     for (const e of entries) arr.push(e);
   }
   // cap pool size so per-frame matching stays cheap
@@ -4196,6 +5320,7 @@ function quoteCandidatesByLab(labels) {
       const step = arr.length / 360;
       const sub = [];
       for (let i = 0; i < 360; i++) sub.push(arr[Math.floor(i * step)]);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
       map.set(lab, sub);
     }
   }
@@ -4238,17 +5363,35 @@ function transformFragmentTo(cand, rev, a, b) {
 // signature retrieves its best-matching fragment (either traversal
 // direction); the top worldsQuote fraction of matches replaces the original
 // runs, endpoints preserved so the ring stays closed.
+<<<<<<< HEAD
+function quoteContour(contour, candidates, minDim, outMarks, proj) {
+  if (!candidates || !candidates.length || contour.length < 6 || worldsQuote <= 0.001)
+    return contour;
+  // resolve each candidate's source member to its projected screen position
+  // (null when the member is behind the camera at this view)
+  const candPos = proj
+    ? candidates.map(c => (c.srcIdx != null ? proj[c.srcIdx] : null))
+    : null;
+=======
 function quoteContour(contour, candidates, minDim) {
   if (!candidates || !candidates.length || contour.length < 6 || worldsQuote <= 0.001)
     return contour;
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   let per = 0;
   for (let i = 0; i < contour.length; i++) {
     const a = contour[i], b = contour[(i + 1) % contour.length];
     per += Math.hypot(b[0] - a[0], b[1] - a[1]);
   }
+<<<<<<< HEAD
+  if (per < minDim * 0.06) return contour;   // too small to quote legibly
+  // quote in long runs so each fragment is a recognizable curve, not a retouch
+  const segLen = Math.max(minDim * 0.14, per / 12);
+  const nSeg = Math.max(3, Math.min(20, Math.round(per / segLen)));
+=======
   if (per < minDim * 0.12) return contour;   // too small to quote legibly
   const segLen = Math.max(minDim * 0.06, per / 28);
   const nSeg = Math.max(4, Math.min(48, Math.round(per / segLen)));
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   const SPS = 9;
   const ring = resampleClosedPts(contour, nSeg * SPS);
   const segs = [];
@@ -4267,6 +5410,49 @@ function quoteContour(contour, candidates, minDim) {
     for (let k = 0; k < SPS; k++)
       segArc += Math.hypot(seg[k + 1][0] - seg[k][0], seg[k + 1][1] - seg[k][1]);
     const segRatio = segArc / Math.max(1e-9, chord);
+<<<<<<< HEAD
+    // locality: quote only from members projected near this segment, so the
+    // boundary is drawn from what it locally bounds
+    let pool = candidates;
+    if (candPos) {
+      const mx = (seg[0][0] + seg[SPS][0]) / 2;
+      const my = (seg[0][1] + seg[SPS][1]) / 2;
+      const R = Math.max(minDim * 0.05, chord * 1.1);
+      const near = [];
+      const scoredAll = [];
+      for (let ci = 0; ci < candidates.length; ci++) {
+        const pp = candPos[ci];
+        if (!pp) continue;
+        const dd = Math.hypot(pp.x - mx, pp.y - my);
+        scoredAll.push([dd, candidates[ci]]);
+        if (dd <= R) near.push(candidates[ci]);
+      }
+      if (near.length >= 3) {
+        pool = near;
+      } else if (scoredAll.length) {
+        scoredAll.sort((a, b) => a[0] - b[0]);
+        pool = scoredAll.slice(0, Math.min(8, scoredAll.length)).map(t => t[1]);
+      }
+      // remember each pooled candidate's distance for the score term
+      var poolDist = new Map();
+      for (const [dd, c] of scoredAll) poolDist.set(c, dd);
+    }
+    let best = null, bestD = Infinity, bestRev = false;
+    for (const cand of pool) {
+      const d0 = descDistance(desc, cand.desc, false);
+      const d1 = descDistance(desc, cand.desc, true);
+      // chord-ratio term: penalize sweeps disproportionate to the segment;
+      // distinctness bonus: among near-equal matches prefer the fragment with
+      // more character (subtract a little for higher arc/chord), so quoting
+      // reads as quotation rather than a slightly wavier hull
+      const distinct = Math.min(0.12, 0.06 * Math.max(0, cand.c - 1.0));
+      const prox = (typeof poolDist !== 'undefined' && poolDist && poolDist.has(cand))
+        ? 0.25 * Math.min(1, poolDist.get(cand) / Math.max(1, minDim * 0.25)) : 0;
+      const d = Math.min(d0, d1) + 0.3 * Math.abs(segRatio - cand.c) - distinct + prox;
+      if (d < bestD) { bestD = d; best = cand; bestRev = d1 < d0; }
+    }
+    if (best && bestD < 0.5) matches[s] = { s, cand: best, rev: bestRev, d: bestD };
+=======
     let best = null, bestD = Infinity, bestRev = false;
     for (const cand of candidates) {
       const d0 = descDistance(desc, cand.desc, false);
@@ -4277,6 +5463,7 @@ function quoteContour(contour, candidates, minDim) {
       if (d < bestD) { bestD = d; best = cand; bestRev = d1 < d0; }
     }
     if (best && bestD < 0.45) matches[s] = { s, cand: best, rev: bestRev, d: bestD };
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   }
   const ranked = matches.filter(m => m).sort((a, b) => a.d - b.d);
   const nQuote = Math.round(worldsQuote * ranked.length);
@@ -4289,7 +5476,19 @@ function quoteContour(contour, candidates, minDim) {
     const m = matches[s];
     if (m && take.has(s)) {
       const q = transformFragmentTo(m.cand, m.rev, seg[0], seg[SPS]);
+<<<<<<< HEAD
+      if (q) {
+        pts = q;
+        if (outMarks) outMarks.push({
+          mx: (seg[0][0] + seg[SPS][0]) / 2,
+          my: (seg[0][1] + seg[SPS][1]) / 2,
+          srcIdx: m.cand.srcIdx,
+          d: m.d,
+        });
+      }
+=======
       if (q) pts = q;
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     }
     for (let k = 0; k < pts.length - 1; k++) out.push(pts[k]);
   }
@@ -4298,8 +5497,15 @@ function quoteContour(contour, candidates, minDim) {
 
 function computeWorlds(W, H) {
   const wp = worldsParams();
+<<<<<<< HEAD
+  const labels = worldsFromLayers ? layerLabelsForWorlds() : worldClusterLabels(wp.K);
+  const { proj, refDist } = projectWorldsPerspective(W, H);
+  const quoteMarksRaw = [];   // provenance: {mx,my,srcIdx,d} per spliced segment
+  const quoteMarks = [];      // resolved to source screen positions
+=======
   const labels = worldClusterLabels(wp.K);
   const { proj, refDist } = projectWorldsPerspective(W, H);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   if (refDist <= 0) return { forms: [], links: [], bridges: [], unions: [], depthRange: { near: 0, far: 1 } };
 
   // Hierarchical scale. Each world contributes one PRIMARY form — its medoid,
@@ -4321,6 +5527,14 @@ function computeWorlds(W, H) {
 
   const minDim = Math.min(W, H);
   const base = minDim * 0.06;
+<<<<<<< HEAD
+  // image-scale registration: size silhouettes by the sprite's true projected
+  // footprint (same formula the images mode uses), so worlds forms sit at the
+  // exact screen scale of the photographs they come from.
+  const _regThf = Math.tan((camera.fov * Math.PI / 180) / 2);
+  const _regSprW = baseScale * userScale;
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   const minS = minDim * 0.022, maxS = minDim * 0.55;
   const cullS = minDim * 0.02;
 
@@ -4337,7 +5551,13 @@ function computeWorlds(W, H) {
     const cnt = countOf.get(lab) || 1;
     const massF = 0.8 + ((cnt - minCount) / cspan) * 1.7;   // 0.8..2.5 by world mass
     const central = isMedoid ? 1.9 : 0.55;                  // primaries dominate
+<<<<<<< HEAD
+    let size = worldsMatchImages
+      ? (_regSprW * H) / (2 * pr.depth * _regThf)
+      : base * massF * central * (refDist / pr.depth);
+=======
     let size = base * massF * central * (refDist / pr.depth);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     size = Math.max(minS, Math.min(maxS, size));
     // record every member for the union pass (independent of complexity cull)
     if (worldsUnify > 0.001) {
@@ -4389,7 +5609,22 @@ function computeWorlds(W, H) {
       for (const u of unions) {
         const cands = candByLab.get(u.lab);
         if (!cands || !cands.length) continue;
+<<<<<<< HEAD
+        u.contours = u.contours.map(c => quoteContour(c, cands, minDim, quoteMarksRaw, proj));
+        u.quoted = true;   // renderer inks these boundaries so quotes read
+      }
+      // resolve source members to their projected (spread-applied) positions
+      for (const m of quoteMarksRaw) {
+        const pp = (m.srcIdx != null) ? proj[m.srcIdx] : null;
+        if (pp) quoteMarks.push({ mx: m.mx, my: m.my, sx: pp.x, sy: pp.y, d: m.d, srcIdx: m.srcIdx });
+      }
+      if (showQuoteSources && quoteMarksRaw.length) {
+        const ds = quoteMarksRaw.map(m => m.d).sort((a, b) => a - b);
+        const q = (f) => ds[Math.min(ds.length - 1, Math.floor(f * ds.length))].toFixed(3);
+        console.log(`[quote] ${ds.length} splices | match dist q0 ${q(0)} q25 ${q(0.25)} q50 ${q(0.5)} q75 ${q(0.75)} max ${ds[ds.length-1].toFixed(3)}`);
+=======
         u.contours = u.contours.map(c => quoteContour(c, cands, minDim));
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
       }
     }
   }
@@ -4461,7 +5696,11 @@ function computeWorlds(W, H) {
   for (const u of unions) { if (u.depth < near) near = u.depth; if (u.depth > far) far = u.depth; }
   if (!isFinite(near) || !isFinite(far)) { near = 0; far = 1; }
   const depthRange = { near, far };
+<<<<<<< HEAD
+  return { forms, links, bridges, unions, depthRange, quoteMarks };
+=======
   return { forms, links, bridges, unions, depthRange };
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 }
 
 // Compute the collapsed-perspective layout: a list of placements
@@ -4597,8 +5836,19 @@ function extractContentPolygonsFromGrad(grad, w, h) {
     if (spanX > 0.85 && spanY > 0.85 && boundaryFrac > 0.6) continue;  // frame tracer
     const simplified = simplifyPolyline(pts, 0.8);
     if (simplified.length < 3) continue;
+<<<<<<< HEAD
+    // significance = enclosed AREA (shoelace): dominant compositional masses
+    // rank above wide but thin sprawling edges.
+    let area2 = 0;
+    for (let k = 0; k < simplified.length; k++) {
+      const a = simplified[k], b = simplified[(k + 1) % simplified.length];
+      area2 += a[0] * b[1] - b[0] * a[1];
+    }
+    const sig = Math.abs(area2 / 2);
+=======
     // significance = perimeter span; used to keep only the dominant forms
     const sig = (bxmax - bxmin) + (bymax - bymin);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     polys.push({ pts: simplified.map(p => [p[0] / w, p[1] / h]), sig });
   }
   // Keep only the most significant contours per image. The long tail is noise
@@ -4607,13 +5857,93 @@ function extractContentPolygonsFromGrad(grad, w, h) {
   return polys.slice(0, 6).map(o => o.pts);
 }
 
+<<<<<<< HEAD
+// Border-flood figure mask. Estimate the ground palette from a 2px frame
+// ring, flood the background inward across low-gradient, border-coloured
+// pixels (a watershed grown from border markers), and trace the complement —
+// the figure — as closed [0,1]-relative polygons. Model-free and robust on
+// artwork photography and drawings (figure on ground); on busy scenes the
+// mask degrades toward the full frame and is rejected.
+function extractMaskPolygonsBorderFlood(imd, grad, w, h) {
+  const N = w * h;
+  const d = imd.data;
+  const rs = [], gs = [], bs = [];
+  const ring = 2;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (x >= ring && x < w - ring && y >= ring && y < h - ring) continue;
+    const j = (y * w + x) * 4;
+    rs.push(d[j]); gs.push(d[j + 1]); bs.push(d[j + 2]);
+  }
+  const med = (a) => { a.sort((p, q) => p - q); return a[a.length >> 1] || 0; };
+  const mr = med(rs), mg = med(gs), mb = med(bs);
+  let maxG = 0;
+  for (let i = 0; i < N; i++) if (grad[i] > maxG) maxG = grad[i];
+  const gradTol = maxG * 0.22;
+  const colTol = 70;
+  const colDist = (i) => {
+    const j = i * 4;
+    return Math.abs(d[j] - mr) + Math.abs(d[j + 1] - mg) + Math.abs(d[j + 2] - mb);
+  };
+  const bg = new Uint8Array(N);
+  const seeds = [];
+  for (let x = 0; x < w; x++) { seeds.push(x, (h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { seeds.push(y * w, y * w + (w - 1)); }
+  const queue = [];
+  for (const i of seeds) {
+    if (!bg[i] && colDist(i) < colTol * 1.4) { bg[i] = 1; queue.push(i); }
+  }
+  let head = 0;
+  while (head < queue.length) {
+    const i = queue[head++];
+    const x = i % w, y = (i / w) | 0;
+    if (x > 0     && !bg[i - 1] && grad[i - 1] < gradTol && colDist(i - 1) < colTol) { bg[i - 1] = 1; queue.push(i - 1); }
+    if (x < w - 1 && !bg[i + 1] && grad[i + 1] < gradTol && colDist(i + 1) < colTol) { bg[i + 1] = 1; queue.push(i + 1); }
+    if (y > 0     && !bg[i - w] && grad[i - w] < gradTol && colDist(i - w) < colTol) { bg[i - w] = 1; queue.push(i - w); }
+    if (y < h - 1 && !bg[i + w] && grad[i + w] < gradTol && colDist(i + w) < colTol) { bg[i + w] = 1; queue.push(i + w); }
+  }
+  let fig = new Float32Array(N);
+  for (let i = 0; i < N; i++) fig[i] = bg[i] ? 0 : 1;
+  fig = gaussianBlurFloat(fig, w, h, 1.4);
+  let area = 0;
+  for (let i = 0; i < N; i++) if (fig[i] > 0.5) area++;
+  const frac = area / N;
+  if (frac < 0.02 || frac > 0.96) return [];
+  const segs = marchingSquaresAt(fig, w, h, 0.5, 1, 1);
+  const paths = stitchSegmentsToPaths(segs, 0.75);
+  const out = [];
+  for (const pts of paths) {
+    if (pts.length < 8) continue;
+    const closed = Math.hypot(pts[0][0] - pts[pts.length - 1][0],
+                              pts[0][1] - pts[pts.length - 1][1]) < 2.0;
+    if (!closed) continue;
+    let a2 = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const j2 = (i + 1) % pts.length;
+      a2 += pts[i][0] * pts[j2][1] - pts[j2][0] * pts[i][1];
+    }
+    const aFrac = Math.abs(a2 / 2) / N;
+    if (aFrac < 0.015) continue;
+    const simplified = simplifyPolyline(pts, 0.8);
+    if (simplified.length < 3) continue;
+    out.push({ pts: simplified.map(p => [p[0] / w, p[1] / h]), a: aFrac });
+  }
+  out.sort((x, y) => y.a - x.a);
+  return out.slice(0, 3).map(o => o.pts);
+}
+
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 // Combined preprocessor: one Sobel pass per image yields BOTH the normalized
 // edge-map canvas and the content polygons. Halves the work vs computing the
 // gradient twice, and guarantees the two outputs populate together.
 function preprocessImage(srcImg) {
   const w = srcImg.naturalWidth || srcImg.width;
   const h = srcImg.naturalHeight || srcImg.height;
+<<<<<<< HEAD
+  if (w < 8 || h < 8) return { edgeCanvas: null, polys: [], maskPolys: [], complexity: 0.5 };
+=======
   if (w < 8 || h < 8) return { edgeCanvas: null, polys: [], complexity: 0.5 };
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
@@ -4622,6 +5952,10 @@ function preprocessImage(srcImg) {
   const { gray } = imageDataToGrayscale(imd);
   const pre = gaussianBlurFloat(gray, w, h, EDGE_MAP_BLUR_SIGMA);
   const grad = sobelMagnitude(pre, w, h);
+<<<<<<< HEAD
+  const maskPolys = extractMaskPolygonsBorderFlood(imd, grad, w, h);
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 
   // Normalized edge-map canvas: BLACK pixels with alpha = edge intensity.
   // This composites as black linework directly over a white background (no
@@ -4634,10 +5968,23 @@ function preprocessImage(srcImg) {
   const out = ctx.createImageData(w, h);
   let strong = 0;
   const edgeThresh = norm * 0.2;        // "significant edge" relative to this image
+<<<<<<< HEAD
+  // Zero a border margin so the sprite-card FRAME never contributes an edge:
+  // overlapping cards would otherwise stack their perimeters into a box outline.
+  const _emMargin = Math.max(3, Math.round(Math.min(w, h) * 0.045));
+  for (let i = 0, j = 0; i < grad.length; i++, j += 4) {
+    const _x = i % w, _y = (i / w) | 0;
+    let g = grad[i];
+    if (_x < _emMargin || _x >= w - _emMargin || _y < _emMargin || _y >= h - _emMargin) g = 0;
+    const v = Math.min(255, Math.floor(255 * g / norm));
+    out.data[j] = 0; out.data[j + 1] = 0; out.data[j + 2] = 0; out.data[j + 3] = v;
+    if (g > edgeThresh) strong++;
+=======
   for (let i = 0, j = 0; i < grad.length; i++, j += 4) {
     const v = Math.min(255, Math.floor(255 * grad[i] / norm));
     out.data[j] = 0; out.data[j + 1] = 0; out.data[j + 2] = 0; out.data[j + 3] = v;
     if (grad[i] > edgeThresh) strong++;
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   }
   ctx.putImageData(out, 0, 0);
   // visual complexity = share of the image carrying significant edge structure
@@ -4655,7 +6002,11 @@ function preprocessImage(srcImg) {
     }
   }
   const polys = extractContentPolygonsFromGrad(gradCopy, w, h);
+<<<<<<< HEAD
+  return { edgeCanvas: c, polys, maskPolys, complexity };
+=======
   return { edgeCanvas: c, polys, complexity };
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 }
 
 function precomputeAllEdgeMaps() {
@@ -4672,13 +6023,38 @@ function precomputeAllEdgeMaps() {
     const img = new Image();
     img.onload = () => {
       try {
+<<<<<<< HEAD
+        const { edgeCanvas, polys, maskPolys, complexity } = preprocessImage(img);
+=======
         const { edgeCanvas, polys, complexity } = preprocessImage(img);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
         if (edgeCanvas) edgeMaps.set(p.id, edgeCanvas);
         edgeComplexity.set(p.id, complexity);
         complexityRankCache = null;   // rank rebuilds on next worlds render
         // Sidecar geometry wins over the browser Sobel polygons when present:
         // figural silhouettes and learned-edge contours instead of gradient
         // isolines. Fragments register into fragLib for the quoting pass.
+<<<<<<< HEAD
+        registerSidecarGeometry(p);
+        if (polys && polys.length > 0) {
+          gradPolys.set(p.id, polys);
+          polyTotal += polys.length;
+        }
+        if (maskPolys && maskPolys.length > 0) floodPolys.set(p.id, maskPolys);
+        resolveSilhouetteFor(p.id);
+      } catch (e) { console.warn('image preproc failed for', p.id, e); }
+      edgeMapsReady++;
+      if (edgeMapsReady === edgeMapsTotal) {
+        console.log('[silhouettes] sidecar ' + sidecarMatched + '/' + edgeMapsTotal +
+                    ' · flood ' + floodPolys.size + ' · sobel ' + gradPolys.size +
+                    ' (source: ' + silhouetteSource + ')');
+        if (sidecarMatched === 0 && typeof GEOMETRY !== 'undefined' && GEOMETRY &&
+            Object.keys(GEOMETRY).length === 0) {
+          console.warn('[silhouettes] content_geometry.json matched 0 current ids — ' +
+                       'stale sidecar from a previous embedding. Re-run extract_geometry.py.');
+        }
+      }
+=======
         const usedSidecar = registerSidecarGeometry(p);
         if (!usedSidecar && polys && polys.length > 0) {
           contentPolygons.set(p.id, polys);
@@ -4686,6 +6062,7 @@ function precomputeAllEdgeMaps() {
         }
       } catch (e) { console.warn('image preproc failed for', p.id, e); }
       edgeMapsReady++;
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
       if (currentMode === 'linework' &&
           (lineworkStyle === 'segmentation' ||
            lineworkStyle === 'composition' ||
@@ -4783,8 +6160,137 @@ function computeSegmentationPaths(processWidth, targetW, targetH) {
   const targetP = Math.max(0.05, Math.min(0.95, 1.0 - segSensitivity));
   const threshold = nonzero[Math.floor(targetP * nonzero.length)];
   const segs = marchingSquaresAt(field, captureW, captureH, threshold, 1, 1);
+<<<<<<< HEAD
+  let paths = stitchSegmentsToPaths(segs, 0.5);
+
+  // Straighten: Douglas-Peucker collapses near-straight runs, keeps real curves.
+  if (segStraighten > 0.001) {
+    paths = paths.map(p => (p.length > 2 ? simplifyPolyline(p, segStraighten) : p));
+  }
+
+  // Articulate: dog runs (dense in DINO density) quantize to a grid (pixelated),
+  // rabbit runs (sparse) get Chaikin-smoothed (gestural). Density sampled in the
+  // capture frame from the same visible projected points.
+  if (segArticulate) {
+    const dgw = Math.max(24, Math.min(160, Math.round(captureW / 5)));
+    const dgh = Math.max(24, Math.min(160, Math.round(captureH / 5)));
+    const dpts = [];
+    for (const q of pv.projected) {
+      if (!pointShownP(q.p)) continue;
+      dpts.push({ sx: q.sx * sx, sy: q.sy * sy });
+    }
+    const dgrid = computeDensityGrid(dpts, captureW, captureH, dgw, dgh,
+                                     Math.max(6, captureW * 0.05));
+    let dmax = 0;
+    for (let i = 0; i < dgrid.length; i++) if (dgrid[i] > dmax) dmax = dgrid[i];
+    const densAt = (x, y) => {
+      if (dmax <= 0) return 0;
+      let gx = Math.floor(x / captureW * dgw), gy = Math.floor(y / captureH * dgh);
+      if (gx < 0) gx = 0; else if (gx >= dgw) gx = dgw - 1;
+      if (gy < 0) gy = 0; else if (gy >= dgh) gy = dgh - 1;
+      return dgrid[gy * dgw + gx] / dmax;
+    };
+    const grid = Math.max(2, segGrid);
+    const chaikin1 = (run) => {
+      if (run.length < 3) return run;
+      const out = [run[0]];
+      for (let i = 0; i < run.length - 1; i++) {
+        const a = run[i], b = run[i + 1];
+        out.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
+        out.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+      }
+      out.push(run[run.length - 1]);
+      return out;
+    };
+    const out = [];
+    for (const p of paths) {
+      if (p.length < 2) { out.push(p); continue; }
+      const np = [];
+      for (const v of p) {
+        const dog = densAt(v[0], v[1]) >= 0.5;
+        if (dog) np.push([Math.round(v[0] / grid) * grid, Math.round(v[1] / grid) * grid]);
+        else np.push(v);
+      }
+      // smooth only the rabbit (non-quantized) stretches
+      const smoothed = [];
+      let i = 0;
+      while (i < np.length) {
+        const rabbit = densAt(np[i][0], np[i][1]) < 0.5;
+        const run = [np[i]];
+        let j = i + 1;
+        while (j < np.length && (densAt(np[j][0], np[j][1]) < 0.5) === rabbit) { run.push(np[j]); j++; }
+        smoothed.push(...(rabbit ? chaikin1(run) : run));
+        i = j;
+      }
+      out.push(smoothed);
+    }
+    paths = out;
+  }
+
+  // ---- unify: turn the linework into filled figures --------------------
+  // Two methods; 'off' leaves pure linework. Output is a { fillPaths (even-odd),
+  // strokePaths } contract shared by the live and SVG composition renderers.
+  let fillPaths = [], strokePaths = paths;
+  const minDim = Math.min(captureW, captureH);
+
+  if (segUnifyMode === 'density' && segUnify > 0.001 && paths.length) {
+    // rasterize thin, blur by reach, threshold: dense clusters fill, gaps stay.
+    const uc = document.createElement('canvas');
+    uc.width = captureW; uc.height = captureH;
+    const uctx = uc.getContext('2d');
+    uctx.fillStyle = '#000'; uctx.fillRect(0, 0, captureW, captureH);
+    uctx.strokeStyle = '#fff';
+    uctx.lineJoin = 'round'; uctx.lineCap = 'round'; uctx.lineWidth = 1.4;
+    uctx.beginPath();
+    for (const p of paths) {
+      if (p.length < 2) continue;
+      uctx.moveTo(p[0][0], p[0][1]);
+      for (let i = 1; i < p.length; i++) uctx.lineTo(p[i][0], p[i][1]);
+    }
+    uctx.stroke();
+    const uim = uctx.getImageData(0, 0, captureW, captureH).data;
+    let uf = new Float32Array(captureW * captureH);
+    for (let i = 0, j = 0; i < uf.length; i++, j += 4) uf[i] = uim[j];
+    const reach = Math.max(0.8, segUnify * minDim * 0.05);
+    uf = gaussianBlurFloat(uf, captureW, captureH, reach);
+    let umax = 0;
+    for (let i = 0; i < uf.length; i++) if (uf[i] > umax) umax = uf[i];
+    if (umax > 1e-9) {
+      const lvl = umax * 0.5;
+      const um = new Float32Array(captureW * captureH);
+      if (segUnifyInvert) { for (let i = 0; i < um.length; i++) um[i] = uf[i] >= lvl ? 0 : 1; }
+      else { for (let i = 0; i < um.length; i++) um[i] = uf[i] >= lvl ? 1 : 0; }
+      const usegs = marchingSquaresAt(um, captureW, captureH, 0.5, 1, 1);
+      fillPaths = stitchSegmentsToPaths(usegs, 0.5);
+      strokePaths = [];
+    }
+  } else if (segUnifyMode === 'enclosed' && paths.length) {
+    // seal near-closed contours, fill even-odd (nested loops -> holes);
+    // open fragments stay as lines.
+    const closeTol = 2 + segUnify * minDim * 0.06;
+    const loops = [], open = [];
+    for (const p of paths) {
+      if (p.length >= 4 &&
+          Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]) <= closeTol) {
+        loops.push(p);
+      } else {
+        open.push(p);
+      }
+    }
+    if (segUnifyInvert) {
+      // fill the frame minus the loops: outer rect first, loops as holes (even-odd)
+      fillPaths = [[[0, 0], [captureW, 0], [captureW, captureH], [0, captureH]], ...loops];
+    } else {
+      fillPaths = loops;
+    }
+    strokePaths = open;
+  }
+
+  return { paths, fillPaths, strokePaths, width: captureW, height: captureH };
+=======
   const paths = stitchSegmentsToPaths(segs, 0.5);
   return { paths, width: captureW, height: captureH };
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 }
 
 
@@ -5039,6 +6545,106 @@ function volumeWireMaterial() {
   });
 }
 
+<<<<<<< HEAD
+function _volLayerColor(lab) {
+  for (const p of POINTS) if (p.layer === lab && p.color) return p.color;
+  return volumeColorHex;
+}
+let volumeObjs = new Map();   // stratify layer -> MarchingCubes instance
+
+function _clearVolumes() {
+  for (const [, o] of volumeObjs) { scene.remove(o); o.material.dispose(); }
+  volumeObjs = new Map();
+  if (volumeObj) { scene.remove(volumeObj); volumeObj.material.dispose(); volumeObj = null; }
+  if (volumeWire) { scene.remove(volumeWire); volumeWire.material.dispose(); volumeWire = null; }
+}
+
+function _makeMC(colorHex) {
+  const c = new THREE.Color(colorHex);
+  const mat = new THREE.MeshPhongMaterial({
+    color: c, specular: 0x202020, shininess: 18, flatShading: false,
+    transparent: volumeOpacity < 0.999, opacity: volumeOpacity,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const mc = new MarchingCubes(volumeResolution, mat, true, false, 200000);
+  const objScale = radius * VOLUME_PAD;
+  mc.position.set(cx, cy, cz);
+  mc.scale.set(objScale, objScale, objScale);
+  mc.isolation = 80;
+  mc.renderOrder = 2;
+  scene.add(mc);
+  return mc;
+}
+
+function rebuildVolumeObject() {
+  _clearVolumes();
+  if (!showVolume) return;
+  if (volumeGap) {
+    // one carved volume: the enclosed emptiness between the shown points
+    volumeObj = _makeMC(volumeColorHex);
+  } else {
+    // one tinted surface per visible stratify layer (period / mode / ...):
+    // intersections and gaps between periods read directly as translucent
+    // volumes meeting, overlapping, or standing apart.
+    const labs = Array.from(new Set(
+      POINTS.filter(p => pointShownP(p)).map(p => p.layer))).sort();
+    for (const lab of labs) volumeObjs.set(lab, _makeMC(_volLayerColor(lab)));
+    volumeObj = volumeObjs.values().next().value || null;  // OBJ export target
+  }
+  if (volumeStyle === 'wireframe' || volumeStyle === 'both') {
+    const wmat = volumeWireMaterial();
+    const w = new MarchingCubes(volumeResolution, wmat, true, false, 200000);
+    const ref = volumeObj || volumeObjs.values().next().value;
+    if (ref) { w.position.copy(ref.position); w.scale.copy(ref.scale); w.isolation = ref.isolation; }
+    w.renderOrder = 3;
+    scene.add(w);
+    volumeWire = w;
+  }
+  updateVolumeBalls();
+  applyVolumeStyle();
+}
+
+function updateVolumeBalls() {
+  if (!showVolume) return;
+  const span = 2 * radius * VOLUME_PAD;
+  const toLocal = (p) => [(p.x - cx) / span + 0.5,
+                          (p.y - cy) / span + 0.5,
+                          (p.z - cz) / span + 0.5];
+  const inRange = (l) => l[0] >= 0 && l[0] <= 1 && l[1] >= 0 && l[1] <= 1 &&
+                         l[2] >= 0 && l[2] <= 1;
+  if (volumeGap && volumeObj) {
+    volumeObj.reset();
+    // broad envelope spanning the cloud, then each shown point carved out:
+    // the isosurface encloses the EMPTINESS between points — the phantom as
+    // a navigable volume.
+    volumeObj.addBall(0.5, 0.5, 0.5, 1.6, 3.2);
+    for (const p of POINTS) {
+      if (!pointShownP(p)) continue;
+      const l = toLocal(p); if (!inRange(l)) continue;
+      volumeObj.addBall(l[0], l[1], l[2], -volumeStrength * gapCarve, 12);
+    }
+    volumeObj.update();
+  } else {
+    for (const [lab, mc] of volumeObjs) {
+      mc.reset();
+      for (const p of POINTS) {
+        if (p.layer !== lab || !pointShownP(p)) continue;
+        const l = toLocal(p); if (!inRange(l)) continue;
+        mc.addBall(l[0], l[1], l[2], volumeStrength, 12);
+      }
+      mc.update();
+    }
+  }
+  if (volumeWire) {
+    volumeWire.reset();
+    for (const p of POINTS) {
+      if (!pointShownP(p)) continue;
+      const l = toLocal(p); if (!inRange(l)) continue;
+      volumeWire.addBall(l[0], l[1], l[2], volumeStrength, 12);
+    }
+    volumeWire.update();
+  }
+=======
 function rebuildVolumeObject() {
   // Destroy + recreate the MarchingCubes instance (resolution is fixed at
   // construction time, so any res change goes through this path).
@@ -5103,6 +6709,7 @@ function updateVolumeBalls() {
   };
   fillBalls(volumeObj);
   if (volumeWire) fillBalls(volumeWire);
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 }
 
 function applyVolumeStyle() {
@@ -5128,6 +6735,14 @@ function applyVolumeStyle() {
 }
 
 function applyVolumeMaterial() {
+<<<<<<< HEAD
+  for (const [, o] of volumeObjs) {
+    o.material.opacity = volumeOpacity;
+    o.material.transparent = volumeOpacity < 0.999;
+    o.material.needsUpdate = true;
+  }
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   if (!volumeObj) return;
   const c = new THREE.Color(volumeColorHex);
   volumeObj.material.color.copy(c);
@@ -5342,6 +6957,51 @@ async function halluPing() {
 halluPing();
 setInterval(halluPing, 8000);
 
+<<<<<<< HEAD
+// Field distribution of mean-kNN distance: for a sample of members, the mean
+// distance to their own k nearest neighbors. The target's mean-kNN is then
+// ranked as a percentile against this distribution, so density is relative to
+// how tight the field actually is (robust to overall scale and to spread).
+let _fieldMeanK = null;
+function fieldMeanKDist(k) {
+  if (_fieldMeanK != null) return _fieldMeanK;
+  const step = Math.max(1, Math.floor(POINTS.length / 160));
+  const vals = [];
+  for (let i = 0; i < POINTS.length; i += step) {
+    const a = POINTS[i];
+    const ds = [];
+    for (let j = 0; j < POINTS.length; j++) {
+      if (i === j) continue;
+      const b = POINTS[j];
+      ds.push(Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z));
+    }
+    ds.sort((x, y) => x - y);
+    const kk = Math.min(k, ds.length);
+    let m = 0; for (let t = 0; t < kk; t++) m += ds[t];
+    vals.push(m / Math.max(1, kk));
+  }
+  vals.sort((a, b) => a - b);
+  _fieldMeanK = vals.length ? vals : [1];
+  return _fieldMeanK;
+}
+
+// Local density in [0,1] at the camera target: 1 = tightly accumulated
+// (dog country), 0 = empty (rabbit country). Target mean-kNN ranked as a
+// percentile against the field, then inverted (small distance = high density).
+function localDensity(scored, k) {
+  let mean = 0;
+  for (let i = 0; i < k; i++) mean += scored[i][0];
+  mean /= Math.max(1, k);
+  const dist = fieldMeanKDist(k);
+  // percentile of `mean` within the field distribution
+  let lo = 0;
+  while (lo < dist.length && dist[lo] < mean) lo++;
+  const pct = lo / Math.max(1, dist.length);   // 0 = tighter than all, 1 = looser
+  return Math.max(0, Math.min(1, 1 - pct));      // invert: tight => high density
+}
+
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 function halluNeighborhoodPrompt() {
   const t = controls.target;
   const scored = [];
@@ -5362,12 +7022,42 @@ function halluNeighborhoodPrompt() {
   }
   const clean = (s) => s.replace(/^[0-9]+_/, '').replace(/_/g, ' ');
   const top = (m, n) => [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(e => clean(e[0]));
+<<<<<<< HEAD
+
+  // dog / rabbit register from local density
+  const dens = localDensity(scored, k);
+  const dogW = (0.6 + dens * 0.9).toFixed(2);        // 0.6 .. 1.5
+  const rabW = (0.6 + (1 - dens) * 0.9).toFixed(2);  // 0.6 .. 1.5
+  let subject;
+  if (dens > 0.66) {
+    // accumulation: the dog, deposited by concentration
+    subject = `(a red dog:${dogW}), dense heavy body, accumulated matter, ` +
+              `(saturated red:1.1)`;
+  } else if (dens < 0.34) {
+    // emptiness: the rabbit, a withheld shape
+    subject = `(a white rabbit:${rabW}), (empty negative space:1.2), ` +
+              `pale withheld shape, vast quiet ground`;
+  } else {
+    // the dance between: a red dog dissolving toward a rabbit-shaped absence
+    subject = `(a red dog dissolving into a white rabbit:1.1), ` +
+              `(red form:${dogW}) beside (white empty shape:${rabW}), ` +
+              `matter giving way to void`;
+  }
+
+  let prompt = 'semi-abstract painterly scene, soft matte gouache, ' + subject;
+  const eraStr = top(eras, 3).join(', ');
+  const catStr = top(cats, 2).join(', ');
+  if (eraStr) prompt += ', in the manner of ' + eraStr;
+  if (catStr) prompt += ', echoes of ' + catStr;
+  prompt += ', muted earth tones with one saturated accent, misty, minimal';
+=======
   let prompt = 'semi-abstract painterly iconic figures materializing from mist, faceless cartoon figures';
   const eraStr = top(eras, 3).join(', ');
   const catStr = top(cats, 2).join(', ');
   if (eraStr) prompt += ', in the manner of ' + eraStr;
   if (catStr) prompt += ', ' + catStr;
   prompt += ', earth tone palette with jewel accents';
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
   const extraEl = document.getElementById('halluExtra');
   if (extraEl && extraEl.value.trim()) prompt += ', ' + extraEl.value.trim();
   return prompt;
@@ -5663,14 +7353,23 @@ with st.sidebar:
         stroke_color = st.color_picker("Stroke color", "#ffffff")
         stroke_width = st.slider("Stroke width", 0.0, 4.0, 0.0, 0.1)
     if shape == "image":
+<<<<<<< HEAD
+        image_max_edge = st.slider("Thumbnail max edge (px)", 32, 256, 56, 8)
+=======
         image_max_edge = st.slider("Thumbnail max edge (px)", 32, 256, 96, 8)
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     else:
         image_max_edge = 96
 
     st.header("Color")
     color_field = st.selectbox(
         "Color by",
+<<<<<<< HEAD
+        options=["period", "cluster", "category", "subject",
+                 "mode_label", "density", "surprise_pct", "none"],
+=======
         options=["cluster", "category", "subtype", "era", "none"],
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
         format_func=lambda x: f"by {x}" if x != "none" else "uniform",
         index=0,
     )
@@ -5684,7 +7383,11 @@ with st.sidebar:
     st.header("Layers")
     stratify_by = st.selectbox(
         "Split layers by",
+<<<<<<< HEAD
+        options=["period", "cluster", "category", "subject", "mode_label", "none"],
+=======
         options=["cluster", "category", "subtype", "era", "none"],
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
         format_func=lambda x: f"by {x}" if x != "none" else "single layer",
         index=0,
     )
@@ -5838,6 +7541,19 @@ with st.expander("Fluid 3D navigation (with image markers)", expanded=True):
         help="Higher values render sharper sprites but increase load time.",
         key="threejs_thumb_size",
     )
+<<<<<<< HEAD
+    viewer_height = st.slider(
+        "Viewer height (px)", 500, 1500, 950, 25,
+        help="Height of the 3D viewer window. The control panel scrolls if it "
+             "exceeds the window.",
+        key="threejs_viewer_height",
+    )
+
+    # Resolve colors and layers once for all points, mirroring render_to_svg
+    color_for_point = resolve_point_colors(df_valid, settings["color_field"],
+                                            settings["palette_name"],
+                                            settings["override_color"])
+=======
 
     # Resolve colors and layers once for all points, mirroring render_to_svg
     if settings["color_field"] == "none":
@@ -5846,6 +7562,7 @@ with st.expander("Fluid 3D navigation (with image markers)", expanded=True):
         vals = df_valid[settings["color_field"]].astype(str)
         cmap_lookup = categorical_palette(vals, settings["palette_name"])
         color_for_point = [cmap_lookup[v] for v in vals]
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 
     def _layer_for(row):
         if settings["stratify_by"] == "none":
@@ -5876,6 +7593,17 @@ with st.expander("Fluid 3D navigation (with image markers)", expanded=True):
     except Exception:
         _recon_err = np.zeros(len(df_valid), dtype=float)
 
+<<<<<<< HEAD
+    # The marked swap-in point: prefer the per-period conv-AE surprise
+    # (percentile within period, from viewer_signals.py) over the linear-PCA
+    # proxy when it covers the corpus. Rank-based downstream use is unchanged.
+    if "surprise_pct" in df_valid.columns:
+        _sp = pd.to_numeric(df_valid["surprise_pct"], errors="coerce")
+        if int(_sp.notna().sum()) > len(df_valid) // 2:
+            _recon_err = np.where(_sp.notna(), _sp.to_numpy(dtype=float), _recon_err)
+
+=======
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
     sprites_data = []
     want_export_img = (settings["shape"] == "image")
     for i in range(len(df_valid)):
@@ -5909,9 +7637,18 @@ with st.expander("Fluid 3D navigation (with image markers)", expanded=True):
             "layer": _layer_for(row),
             "id": str(row["id"]),
             "cat": str(row.get("category", "")),
+<<<<<<< HEAD
+            "per": str(row.get("period", "")),
+            "sub": str(row.get("subject", "")),
+            "clu": str(row.get("cluster", "")),
+            "mode": str(row.get("mode_label", "")),
+            "dens": (float(row["density"]) if pd.notna(row.get("density")) else None),
+            "srp": (float(row["surprise_pct"]) if pd.notna(row.get("surprise_pct")) else None),
+=======
             "sub": str(row.get("subtype", "")),
             "era": str(row.get("era", "")),
             "clu": str(row.get("cluster", "")),
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
             "ae_surprise": float(_recon_err[i]) if i < len(_recon_err) else 0.0,
         })
 
@@ -5959,7 +7696,12 @@ with st.expander("Fluid 3D navigation (with image markers)", expanded=True):
         _geo = load_content_geometry(GEOMETRY_PATH.stat().st_mtime)
         if _geo:
             _ids = {sp["id"] for sp in sprites_data}
+<<<<<<< HEAD
+            geometry_data = decimate_geometry(
+                {k: v for k, v in _geo.items() if k in _ids})
+=======
             geometry_data = {k: v for k, v in _geo.items() if k in _ids}
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
 
     threejs_html = (
         THREEJS_TEMPLATE
@@ -5969,4 +7711,8 @@ with st.expander("Fluid 3D navigation (with image markers)", expanded=True):
         .replace("__SETTINGS_JSON__", json.dumps(export_settings))
         .replace("__BG__", background)
     )
+<<<<<<< HEAD
+    components.html(threejs_html, height=int(viewer_height), scrolling=False)
+=======
     components.html(threejs_html, height=720, scrolling=False)
+>>>>>>> 803bd82c5ea402c3619f61257a4e90b232ff03a1
