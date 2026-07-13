@@ -163,7 +163,7 @@ def categorical_palette(values, palette_name="tab10"):
 # =============================================================================
 # SVG writer
 # =============================================================================
-NUMERIC_COLOR_FIELDS = {"density", "surprise_pct"}
+NUMERIC_COLOR_FIELDS = {"density", "surprise_pct", "proj_stress", "crush", "tear"}
 
 
 def resolve_point_colors(df, color_field, palette_name, override_color):
@@ -174,7 +174,13 @@ def resolve_point_colors(df, color_field, palette_name, override_color):
         return [override_color] * len(df)
     if color_field in NUMERIC_COLOR_FIELDS and color_field in df.columns:
         vals = pd.to_numeric(df[color_field], errors="coerce").to_numpy(dtype=float)
-        cmap_name = "viridis" if color_field == "density" else "magma"
+        cmap_name = {
+            "density": "viridis",
+            "surprise_pct": "magma",
+            "proj_stress": "inferno",
+            "crush": "Reds",
+            "tear": "Blues",
+        }.get(color_field, "magma")
         try:
             cmap = matplotlib.colormaps.get_cmap(cmap_name)
         except Exception:
@@ -414,6 +420,26 @@ def load_data():
         df_valid["mode_label"] = ""
     df_valid["mode_label"] = df_valid["mode_label"].fillna("").astype(str)
     df_valid.loc[df_valid["mode_label"].isin(["", "None", "nan"]), "mode_label"] = "unassigned"
+
+    # Projection-stress signals (projection_stress.py): per-point crush
+    # (false overlap), tear (false gap), and combined proj_stress. Each is a
+    # 0..1 percentile measuring where the 2D layout distorts the feature
+    # space. Aligned by id; absent file -> NaN (fields simply inert).
+    ps_path = EMBEDDINGS_DIR / "projection_stress.json"
+    if ps_path.exists():
+        with open(ps_path, encoding="utf-8") as f:
+            _ps = json.load(f)
+        _ps_df = pd.DataFrame({
+            "id": _ps["ids"],
+            "crush": _ps["crush"],
+            "tear": _ps["tear"],
+            "proj_stress": _ps["stress"],
+        })
+        df_valid = df_valid.merge(_ps_df, on="id", how="left")
+    else:
+        df_valid["crush"] = np.nan
+        df_valid["tear"] = np.nan
+        df_valid["proj_stress"] = np.nan
 
     return df_valid, valid_features, embeddings_3d, []
 
@@ -1001,6 +1027,7 @@ const POINTS = __POINTS_JSON__;
 // fragments with turning-angle descriptors). Empty object when absent.
 const GEOMETRY = __GEOMETRY_JSON__;
 const EDGES = __EDGES_JSON__;
+const CHORDS = __CHORDS_JSON__;
 const SETTINGS = __SETTINGS_JSON__;
 
 // Scene setup
@@ -2174,6 +2201,29 @@ function buildSVGFromCurrentView() {
         `x2="${b.sx.toFixed(2)}" y2="${b.sy.toFixed(2)}" ` +
         `stroke="${SETTINGS.edges_color}" ` +
         `stroke-width="${SETTINGS.edges_width.toFixed(2)}"${op}/>`
+      );
+    }
+  }
+
+  // Chords — torn pairs. Feature-space neighbors the projection pulled
+  // apart, drawn straight across the gap the layout manufactured. This is
+  // chord-not-flow made literal: an adjacency cutting across the manifold,
+  // not an interpolated skin. Width and opacity scale with tear strength.
+  if (SETTINGS.show_chords && CHORDS && CHORDS.length > 0) {
+    addLayer("chords");
+    const byIdC = new Map();
+    for (const q of projected) byIdC.set(q.p.id, q);
+    for (const c of CHORDS) {
+      const a = byIdC.get(c[0]), b = byIdC.get(c[1]);
+      if (!a || !b) continue;
+      const s = c[2];
+      const w = (SETTINGS.chords_width * (0.35 + 0.65 * s)).toFixed(2);
+      const o = (0.15 + 0.6 * s).toFixed(2);
+      layers.get("chords").push(
+        `<line x1="${a.sx.toFixed(2)}" y1="${a.sy.toFixed(2)}" ` +
+        `x2="${b.sx.toFixed(2)}" y2="${b.sy.toFixed(2)}" ` +
+        `stroke="${SETTINGS.chords_color}" stroke-width="${w}" ` +
+        `stroke-opacity="${o}"/>`
       );
     }
   }
@@ -6853,7 +6903,8 @@ with st.sidebar:
     color_field = st.selectbox(
         "Color by",
         options=["period", "cluster", "category", "subject",
-                 "mode_label", "density", "surprise_pct", "none"],
+                 "mode_label", "density", "surprise_pct",
+                 "proj_stress", "crush", "tear", "none"],
         format_func=lambda x: f"by {x}" if x != "none" else "uniform",
         index=0,
     )
@@ -6878,6 +6929,17 @@ with st.sidebar:
         edges_color = st.color_picker("Edge color", "#ffffff")
         edges_opacity = st.slider("Edge opacity", 0.02, 1.0, 0.15, 0.02)
         edges_width = st.slider("Edge width", 0.1, 3.0, 0.5, 0.1)
+
+    with st.expander("Projection chords", expanded=False):
+        show_chords = st.checkbox(
+            "Draw projection chords", value=False,
+            help="Torn pairs from projection_stress.json: feature-space "
+                 "neighbors the 2D layout pulled apart. Drawn across the "
+                 "manufactured gap. Run projection_stress.py first.",
+        )
+        chords_max = st.slider("Max chords", 50, 1200, 400, 50)
+        chords_color = st.color_picker("Chord color", "#ff3b30")
+        chords_width = st.slider("Chord width", 0.2, 4.0, 1.0, 0.1)
 
     with st.expander("Labels", expanded=False):
         show_labels = st.checkbox("Show labels", value=False)
@@ -6918,6 +6980,8 @@ settings = dict(
     show_edges=bool(show_edges), edges_k=int(edges_k),
     edges_color=edges_color, edges_opacity=float(edges_opacity),
     edges_width=float(edges_width),
+    show_chords=bool(show_chords), chords_max=int(chords_max),
+    chords_color=chords_color, chords_width=float(chords_width),
     show_labels=bool(show_labels),
     labels_size=int(labels_size), labels_color=labels_color,
     image_max_edge=int(image_max_edge),
@@ -7122,6 +7186,24 @@ with st.expander("Fluid 3D navigation (with image markers)", expanded=True):
         ):
             edges_data.append([int(a), int(b)])
 
+    # Chord segments (projection_stress.py). Filtered to sprites actually in
+    # this view, sorted by tear strength, capped. id pairs -> robust to any
+    # visibility filtering upstream.
+    chords_data = []
+    if settings.get("show_chords"):
+        try:
+            _cp = EMBEDDINGS_DIR / "projection_stress.json"
+            if _cp.exists():
+                with open(_cp, encoding="utf-8") as _f:
+                    _ch = json.load(_f).get("chords", [])
+                _vis = {sp["id"] for sp in sprites_data}
+                _kept = [c for c in _ch if c[0] in _vis and c[1] in _vis]
+                _kept.sort(key=lambda c: -c[2])
+                chords_data = [[str(c[0]), str(c[1]), float(c[2])]
+                               for c in _kept[:int(settings["chords_max"])]]
+        except Exception:
+            chords_data = []
+
     export_settings = {
         "width": int(settings["width"]),
         "height": int(settings["height"]),
@@ -7136,6 +7218,10 @@ with st.expander("Fluid 3D navigation (with image markers)", expanded=True):
         "edges_color": settings["edges_color"],
         "edges_opacity": float(settings["edges_opacity"]),
         "edges_width": float(settings["edges_width"]),
+        "show_chords": bool(settings["show_chords"]),
+        "chords_color": settings["chords_color"],
+        "chords_width": float(settings["chords_width"]),
+        "chords_max": int(settings["chords_max"]),
         "show_curve": bool(settings["show_curve"]),
         "curve_concavity": float(settings["curve_concavity"]),
         "curve_smoothing": int(settings["curve_smoothing"]),
@@ -7164,6 +7250,7 @@ with st.expander("Fluid 3D navigation (with image markers)", expanded=True):
         .replace("__GEOMETRY_JSON__", json.dumps(geometry_data))
         .replace("__POINTS_JSON__", json.dumps(sprites_data))
         .replace("__EDGES_JSON__", json.dumps(edges_data))
+        .replace("__CHORDS_JSON__", json.dumps(chords_data))
         .replace("__SETTINGS_JSON__", json.dumps(export_settings))
         .replace("__BG__", background)
     )
