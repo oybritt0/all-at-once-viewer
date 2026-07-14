@@ -819,6 +819,14 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
     <button id="copy">Copy angles</button>
     <button id="reset">Reset</button>
   </div>
+  <div class="row" id="viewSnap" title="Snap to an orthographic axis view. Keys: 1 front, 3 right, 7 top; hold Shift for the opposite face.">
+    <button data-view="front"  style="padding:2px 6px;">Front</button>
+    <button data-view="back"   style="padding:2px 6px;">Back</button>
+    <button data-view="right"  style="padding:2px 6px;">Right</button>
+    <button data-view="left"   style="padding:2px 6px;">Left</button>
+    <button data-view="top"    style="padding:2px 6px;">Top</button>
+    <button data-view="bottom" style="padding:2px 6px;">Bottom</button>
+  </div>
   <div class="row" style="margin-top:4px;color:#999;font-size:10px;">
     <button id="copyCam" title="Copy this exact camera (position, target, lens) as a string. Paste it into the constellation viewer's 'match worlds view' box to reproduce this perspective there, then export a PNG.">copy camera &rarr; constellation</button><br>
     <input id="camOut" readonly placeholder="camera string appears here — select &amp; copy" style="width:210px;font-size:10px;background:#1a1a1a;color:#9fe3b5;border:1px solid #555;margin-top:3px;padding:1px 3px;">
@@ -6093,6 +6101,69 @@ document.getElementById('reset').onclick = () => {
   if (lensEl) { lensEl.value = 45; document.getElementById('lensValue').textContent = '45\u00B0'; }
   markOverlayDirty();
 };
+
+// ---- axis view snapping (Rhino-style named views) --------------------------
+// Glide the camera onto one of the six orthographic axis views, preserving
+// the current pivot (controls.target), distance, and lens. The offset vector
+// is slerped along a great-circle arc so the move reads like a ViewCube snap.
+// camera.up is left at world +Y: OrbitControls (r160) caches its up axis at
+// construction, so we never mutate it. The top/bottom poles are handled by
+// OrbitControls' own makeSafe clamp on the next update().
+const VIEW_DIRS = {
+  front:  new THREE.Vector3( 0,  0,  1),
+  back:   new THREE.Vector3( 0,  0, -1),
+  right:  new THREE.Vector3( 1,  0,  0),
+  left:   new THREE.Vector3(-1,  0,  0),
+  top:    new THREE.Vector3( 0,  1,  0),
+  bottom: new THREE.Vector3( 0, -1,  0),
+};
+let _viewSnapToken = 0;
+function snapToView(name) {
+  const dir = VIEW_DIRS[name];
+  if (!dir) return;
+  const target = controls.target;
+  const startOff = camera.position.clone().sub(target);
+  let dist = startOff.length();
+  if (dist < 1e-6) dist = radius * 2.5;
+  const fromN = startOff.clone().normalize();
+  const toN = dir.clone().normalize();
+  const qEnd = new THREE.Quaternion().setFromUnitVectors(fromN, toN);
+  const qStart = new THREE.Quaternion();      // identity
+  const token = ++_viewSnapToken;             // cancels any in-flight snap
+  const DUR = 320;
+  const t0 = performance.now();
+  const ease = (u) => (u < 0.5 ? 4*u*u*u : 1 - Math.pow(-2*u+2, 3)/2);
+  const tmpQ = new THREE.Quaternion();
+  const tmpV = new THREE.Vector3();
+  function stepView(now) {
+    if (token !== _viewSnapToken) return;     // superseded by a newer snap
+    const u = Math.min(1, (now - t0) / DUR);
+    tmpQ.slerpQuaternions(qStart, qEnd, ease(u));
+    tmpV.copy(fromN).applyQuaternion(tmpQ).multiplyScalar(dist);
+    camera.position.copy(target).add(tmpV);
+    controls.update();
+    markOverlayDirty();
+    if (u < 1) requestAnimationFrame(stepView);
+  }
+  requestAnimationFrame(stepView);
+}
+
+document.querySelectorAll('#viewSnap button').forEach((b) => {
+  b.addEventListener('click', () => snapToView(b.dataset.view));
+});
+
+// keyboard: 1 front, 3 right, 7 top; hold Shift for the opposite face.
+// uses e.code so it is layout independent; ignores modifier combos and text fields.
+window.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+  const el = document.activeElement;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+  let name = null;
+  if (e.code === 'Digit1') name = e.shiftKey ? 'back'   : 'front';
+  else if (e.code === 'Digit3') name = e.shiftKey ? 'left'   : 'right';
+  else if (e.code === 'Digit7') name = e.shiftKey ? 'bottom' : 'top';
+  if (name) { e.preventDefault(); snapToView(name); }
+});
 
 // Resize handling
 window.addEventListener('resize', () => {
