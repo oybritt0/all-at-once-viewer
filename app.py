@@ -790,6 +790,9 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
   #overlay button:hover { background: #3a3a3a; }
   #overlay select, #overlay input[type="range"] { vertical-align: middle; }
   #overlay .modeRow label { margin-right: 6px; cursor: pointer; }
+  #secPanel { display: none; }
+  #secPanel.on { display: block; }
+  #secAxis button.act { background: #5a4020; border-color: #d4813f; }
   #overlay hr.sep {
     border: 0; border-top: 1px solid #333;
     margin: 8px 0 6px 0;
@@ -826,6 +829,31 @@ THREEJS_TEMPLATE = r"""<!DOCTYPE html>
     <button data-view="left"   style="padding:2px 6px;">Left</button>
     <button data-view="top"    style="padding:2px 6px;">Top</button>
     <button data-view="bottom" style="padding:2px 6px;">Bottom</button>
+  </div>
+  <hr class="sep">
+  <div class="row">
+    <label><input type="checkbox" id="secOn"> section plane</label>
+  </div>
+  <div id="secPanel">
+    <div class="row" id="secAxis" title="Which face the plane sits on. The plane snaps to the face normal; slide it with offset.">
+      <button data-ax="x" style="padding:2px 6px;">X</button>
+      <button data-ax="y" style="padding:2px 6px;">Y</button>
+      <button data-ax="z" style="padding:2px 6px;">Z</button>
+      <button id="secFlip" style="padding:2px 6px;" title="Reverse the cut direction.">flip</button>
+    </div>
+    <div class="row">offset: <input type="range" id="secOffset" min="0" max="1" step="0.001" value="0.5" style="width:150px"> <span id="secOffsetValue">0.50</span></div>
+    <div class="row">reach: <input type="range" id="secReach" min="0.01" max="0.5" step="0.005" value="0.09" style="width:150px"> <span id="secReachValue">0.09</span> <span class="hint">(blur radius, fraction of cloud)</span></div>
+    <div class="row">level: <input type="range" id="secLevel" min="0.05" max="0.9" step="0.01" value="0.35" style="width:150px"> <span id="secLevelValue">0.35</span> <span class="hint">(threshold, fraction of peak)</span></div>
+    <div class="row">cut: <select id="secCut" style="width:150px" title="off: the plane is only a marker. clip: keep the far side, so the composition and perimeter draw the cut plus everything beyond it (plan / section convention). slab: keep only what lies in the slab.">
+      <option value="off">off (marker only)</option>
+      <option value="clip">clip (keep far side)</option>
+      <option value="slab">slab (slice at plane)</option>
+    </select></div>
+    <div class="row">slab: <input type="range" id="secSlab" min="0.005" max="0.3" step="0.005" value="0.06" style="width:150px"> <span id="secSlabValue">0.06</span> <span class="hint">(thickness, fraction of cloud)</span></div>
+    <div class="row"><label><input type="checkbox" id="secShowPlane" checked> show plane</label></div>
+    <div class="row"><label><input type="checkbox" id="secPerLayer"> curves per layer</label> <span class="hint">(slower)</span></div>
+    <div class="row"><button id="secExport" title="True-scale orthographic drawing of this cut, in the plane's own coordinates.">Download section as SVG</button></div>
+    <div class="row"><span class="hint" id="secStatus">--</span></div>
   </div>
   <div class="row" style="margin-top:4px;color:#999;font-size:10px;">
     <button id="copyCam" title="Copy this exact camera (position, target, lens) as a string. Paste it into the constellation viewer's 'match worlds view' box to reproduce this perspective there, then export a PNG.">copy camera &rarr; constellation</button><br>
@@ -1316,12 +1344,39 @@ let spritesBaseVisible = true;
 
 POINTS.forEach((p, i) => { p._i = i; });
 
-function pointShownP(p) {
+// Section cut state. Declared HERE, above pointShownP, on purpose: the
+// predicate runs during sprite setup long before the section block's `let`
+// bindings are evaluated, and reading a let from its temporal dead zone
+// throws (typeof throws too, so it cannot be guarded away). The section code
+// writes into this object; the predicate only ever reads it.
+//   mode 'off'  nothing filtered
+//   mode 'clip' keep n.p <= d, the far side. Matches the GL clip plane and
+//               reads as plan/section convention: near half removed, you see
+//               the cut plus everything beyond.
+//   mode 'slab' keep |n.p - d| <= half, the cut as a slice.
+const SEC_FILTER = { mode: 'off', nx: 0, ny: 1, nz: 0, d: 0, half: 0 };
+function secPointOK(p) {
+  const m = SEC_FILTER.mode;
+  if (m === 'off') return true;
+  const s = p.x * SEC_FILTER.nx + p.y * SEC_FILTER.ny + p.z * SEC_FILTER.nz
+            - SEC_FILTER.d;
+  return (m === 'slab') ? (Math.abs(s) <= SEC_FILTER.half) : (s <= 0);
+}
+// Layer / category / focus only. The section FIELD reads this rather than
+// pointShownP: the field at the plane needs points from both sides, so
+// feeding the cut back into it would thin the curve toward the plane and at
+// the limit erase the thing being drawn.
+function pointShownBase(p) {
   if (!p) return false;
   if (layerHidden.has(p.layer)) return false;
   if (p.cat && categoryHidden.has(p.cat)) return false;
   if (focusMode === 'off' || p.dens == null) return true;
   return (focusMode === 'dogs') ? (p.dens >= focusPct) : (p.dens <= focusPct);
+}
+// Everything downstream -- sprites, composition, perimeter outline, worlds,
+// volumes, SVG exports -- gates on this, so the cut lands everywhere at once.
+function pointShownP(p) {
+  return pointShownBase(p) && secPointOK(p);
 }
 function refreshSpriteFilter() {
   for (const sp of sprites) sp.visible = spritesBaseVisible && pointShownP(sp.userData);
@@ -3517,6 +3572,84 @@ function redrawOverlay() {
   if (perimeterOn && currentMode !== 'heatmap') {
     drawPerimeterCurves(ctx, pv.projected, w, h);
   }
+  // linework and heatmap paint an opaque canvas over the WebGL view, so the
+  // section objects are rendered but buried. Draw them here too. 'images'
+  // returns before this and shows the real 3D objects through the clear
+  // overlay, so it must not double-draw.
+  drawSectionOverlay(ctx, pv.exportCam, w, h);
+}
+
+// Project a world point through the same camera the linework uses. Returns
+// null behind the near plane: such points have no screen position, and
+// joining across them throws a line across the frame.
+function secProjectPt(v, cam, camPos, camFwd, w, h) {
+  const spv = (typeof worldsSpread !== 'undefined') ? worldsSpread : 1.0;
+  const t = new THREE.Vector3(cx + (v.x - cx) * spv,
+                              cy + (v.y - cy) * spv,
+                              cz + (v.z - cz) * spv);
+  if (t.clone().sub(camPos).dot(camFwd) <= cam.near) return null;
+  t.project(cam);
+  return { x: (t.x + 1) * 0.5 * w, y: (1 - t.y) * 0.5 * h };
+}
+
+function drawSectionOverlay(ctx, cam, w, h) {
+  if (typeof secOn === 'undefined' || !secOn) return;
+  camera.updateMatrixWorld(true);
+  const camPos = camera.position.clone();
+  const camFwd = new THREE.Vector3();
+  cam.getWorldDirection(camFwd);
+  const O = secPlanePoint();
+  const N = secNormal();
+  const basis = secBasis(secAxis);
+  const U = basis[0], V = basis[1];
+  const P = (v) => secProjectPt(v, cam, camPos, camFwd, w, h);
+
+  ctx.save();
+  // plane frame: dashed and faint. It marks where the cut is, it is not
+  // part of the drawing, and it should not read as linework on export.
+  if (secShowPlane) {
+    const half = secScale() * 0.5 * 1.2 * 0.5;
+    const corners = [
+      O.clone().addScaledVector(U, -half).addScaledVector(V, -half),
+      O.clone().addScaledVector(U,  half).addScaledVector(V, -half),
+      O.clone().addScaledVector(U,  half).addScaledVector(V,  half),
+      O.clone().addScaledVector(U, -half).addScaledVector(V,  half),
+    ].map(P);
+    ctx.strokeStyle = 'rgba(74,144,217,0.55)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) {
+      const a = corners[i], b = corners[(i + 1) % 4];
+      if (!a || !b) continue;            // edge crosses behind the camera
+      ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // section curves, in layer colour, solid: these ARE the drawing.
+  if (secLastPaths) {
+    ctx.lineWidth = 1.4;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    for (const g of secLastPaths) {
+      ctx.strokeStyle = g.color;
+      ctx.beginPath();
+      for (const pl of g.paths) {
+        let pen = false;
+        for (let i = 0; i < pl.length; i++) {
+          const q = P(O.clone().addScaledVector(U, pl[i][0])
+                              .addScaledVector(V, pl[i][1]));
+          if (!q) { pen = false; continue; }   // split, do not bridge
+          if (!pen) { ctx.moveTo(q.x, q.y); pen = true; }
+          else ctx.lineTo(q.x, q.y);
+        }
+      }
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
 }
 
 function markerSVG(x, y, r, p, opAttr, strokeAttr, opacity) {
@@ -6164,6 +6297,369 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'Digit7') name = e.shiftKey ? 'bottom' : 'top';
   if (name) { e.preventDefault(); snapToView(name); }
 });
+
+// ---- section plane -------------------------------------------------------
+// A plane placed on an axis face, slid along its own normal. The curves are the
+// field evaluated AT the plane, not a triangle intersection: each point lays
+// down a gaussian of radius `reach`, the sum is sampled on a grid in the plane,
+// and marching squares traces it at a fraction of its own peak. Same deposit /
+// reach / threshold sequence as the composition unify, so a cut reads like the
+// rest of the viewer.
+const SEC_AXES = {
+  x: new THREE.Vector3(1, 0, 0),
+  y: new THREE.Vector3(0, 1, 0),
+  z: new THREE.Vector3(0, 0, 1),
+};
+let secOn = false, secAxis = 'y', secSign = 1, secOffsetT = 0.5;
+let secReachF = 0.09, secLevelF = 0.35;
+let secCutMode = 'off', secSlabF = 0.06;
+let secShowPlane = true, secPerLayer = false;
+let secLastPaths = null;                  // [{lab, color, paths:[[[u,v],...]]}]
+const secGroup = new THREE.Group();
+scene.add(secGroup);
+const secClipPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const secClipPlaneB = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
+
+// cloud bounds, computed once; the plane travels across this box
+let _secBox = null;
+function secBox() {
+  if (_secBox) return _secBox;
+  const b = new THREE.Box3();
+  for (const p of POINTS) b.expandByPoint(new THREE.Vector3(p.x, p.y, p.z));
+  const pad = b.getSize(new THREE.Vector3()).length() * 0.04;
+  b.expandByScalar(pad);
+  _secBox = b;
+  return b;
+}
+function secScale() { return secBox().getSize(new THREE.Vector3()).length(); }
+
+// in-plane basis for an axis normal: keeps the drawing's axes stable so a
+// plan and a section stay comparable rather than spinning with the camera
+function secBasis(ax) {
+  if (ax === 'y') return [new THREE.Vector3(1,0,0), new THREE.Vector3(0,0,1)];
+  if (ax === 'x') return [new THREE.Vector3(0,0,1), new THREE.Vector3(0,1,0)];
+  return [new THREE.Vector3(1,0,0), new THREE.Vector3(0,1,0)];
+}
+function secNormal() { return SEC_AXES[secAxis].clone().multiplyScalar(secSign); }
+function secPlanePoint() {
+  const b = secBox(), lo = b.min, hi = b.max;
+  const n = SEC_AXES[secAxis];
+  const a = (secAxis === 'x') ? 'x' : (secAxis === 'y') ? 'y' : 'z';
+  const v = lo[a] + (hi[a] - lo[a]) * secOffsetT;
+  const o = b.getCenter(new THREE.Vector3());
+  o[a] = v;
+  return o;
+}
+
+// Evaluate the summed gaussian field on a grid in the plane and contour it.
+// Only points within 3 sigma of the plane matter, so we cut to that slab first
+// and hash it in 2D; the recompute stays interactive while dragging.
+function secComputePaths(pts, sigma, levelFrac, gridN) {
+  const [U, V] = secBasis(secAxis);
+  const N = SEC_AXES[secAxis];
+  const O = secPlanePoint();
+  const b = secBox();
+  const corners = [];
+  for (const sx of [b.min.x, b.max.x]) for (const sy of [b.min.y, b.max.y])
+    for (const sz of [b.min.z, b.max.z]) corners.push(new THREE.Vector3(sx, sy, sz));
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  for (const c of corners) {
+    const d = c.clone().sub(O);
+    const u = d.dot(U), v = d.dot(V);
+    if (u < u0) u0 = u; if (u > u1) u1 = u;
+    if (v < v0) v0 = v; if (v > v1) v1 = v;
+  }
+  const cut = 3 * sigma;
+  const slab = [];
+  for (const p of pts) {
+    const d = new THREE.Vector3(p.x, p.y, p.z).sub(O);
+    const w = d.dot(N);
+    if (Math.abs(w) > cut) continue;
+    slab.push({ u: d.dot(U), v: d.dot(V), w: w });
+  }
+  if (!slab.length) return { paths: [], n: 0 };
+
+  const du = (u1 - u0) / (gridN - 1), dv = (v1 - v0) / (gridN - 1);
+  const cell = Math.max(cut, 1e-6);
+  const hash = new Map();
+  const key = (i, j) => i + ',' + j;
+  for (const s of slab) {
+    const k = key(Math.floor(s.u / cell), Math.floor(s.v / cell));
+    let arr = hash.get(k); if (!arr) { arr = []; hash.set(k, arr); }
+    arr.push(s);
+  }
+  const inv2s2 = 1 / (2 * sigma * sigma);
+  const grid = new Float32Array(gridN * gridN);
+  let mx = 0;
+  for (let gy = 0; gy < gridN; gy++) {
+    const vv = v0 + gy * dv;
+    const cj = Math.floor(vv / cell);
+    for (let gx = 0; gx < gridN; gx++) {
+      const uu = u0 + gx * du;
+      const ci = Math.floor(uu / cell);
+      let acc = 0;
+      for (let i = ci - 1; i <= ci + 1; i++) {
+        for (let j = cj - 1; j <= cj + 1; j++) {
+          const arr = hash.get(key(i, j)); if (!arr) continue;
+          for (const s of arr) {
+            const a = uu - s.u, c2 = vv - s.v;
+            const d2 = a * a + c2 * c2 + s.w * s.w;
+            if (d2 > 9 * sigma * sigma) continue;
+            acc += Math.exp(-d2 * inv2s2);
+          }
+        }
+      }
+      grid[gy * gridN + gx] = acc;
+      if (acc > mx) mx = acc;
+    }
+  }
+  if (mx <= 1e-9) return { paths: [], n: slab.length };
+  const segs = marchingSquaresAt(grid, gridN, gridN, mx * levelFrac, du, dv);
+  const raw = stitchSegmentsToPaths(segs, Math.min(du, dv) * 0.75);
+  // marchingSquaresAt returns coordinates already scaled by the cell size, so
+  // they run 0..(u1-u0). Shift by the grid origin to land in plane
+  // coordinates; the SVG then comes out at true scale.
+  const paths = raw.map(pl => pl.map(pt => [u0 + pt[0], v0 + pt[1]]));
+  return { paths, n: slab.length, u0, u1, v0, v1 };
+}
+
+function secShownPoints() {
+  // base, NOT pointShownP: the field must see both sides of its own cut.
+  const out = [];
+  for (const p of POINTS) if (pointShownBase(p)) out.push(p);
+  return out;
+}
+
+function secRebuild() {
+  while (secGroup.children.length) {
+    const c = secGroup.children.pop();
+    if (c.geometry) c.geometry.dispose();
+    if (c.material) c.material.dispose();
+    secGroup.remove(c);
+  }
+  renderer.clippingPlanes = [];
+  if (!secOn) {
+    // switching the plane off must release the cut, or the composition keeps
+    // drawing half a cloud with no visible cause.
+    secLastPaths = null;
+    renderer.localClippingEnabled = false;
+    if (SEC_FILTER.mode !== 'off') {
+      SEC_FILTER.mode = 'off';
+      refreshSpriteFilter();
+      if (typeof scheduleVolumeRebuild === 'function') scheduleVolumeRebuild(160);
+      markOverlayDirty();
+    }
+    return;
+  }
+
+  const O = secPlanePoint();
+  const N = secNormal();
+  const [U, V] = secBasis(secAxis);
+  const S = secScale();
+  const sigma = Math.max(1e-4, secReachF * S * 0.25);
+  // Nudge the cut geometry onto the KEPT side of the clip plane. Three.js
+  // discards fragments where plane.distanceToPoint < 0; the plane below keeps
+  // the half where N.p <= N.O, so the offset must run along -N. Nudging along
+  // +N puts the curves on the discarded side and they vanish the moment
+  // clipping is switched on.
+  const eps = -S * 2e-4;
+
+  // Publish the cut to the shared predicate, then mirror it in GL. Both use
+  // the same half-space test (keep N.p <= N.O) so the 2D composition and the
+  // 3D view cannot disagree about which side survived.
+  const dPlane = O.clone().dot(N);
+  const halfW = secSlabF * S * 0.5;
+  SEC_FILTER.mode = secCutMode;
+  SEC_FILTER.nx = N.x; SEC_FILTER.ny = N.y; SEC_FILTER.nz = N.z;
+  SEC_FILTER.d = dPlane;
+  SEC_FILTER.half = halfW;
+  if (secCutMode === 'clip') {
+    secClipPlane.normal.copy(N).multiplyScalar(-1);
+    secClipPlane.constant = dPlane;
+    renderer.localClippingEnabled = true;
+    renderer.clippingPlanes = [secClipPlane];
+  } else if (secCutMode === 'slab') {
+    // two half-spaces intersect to a slab: N.p <= d+half AND N.p >= d-half
+    secClipPlane.normal.copy(N).multiplyScalar(-1);
+    secClipPlane.constant = dPlane + halfW;
+    secClipPlaneB.normal.copy(N);
+    secClipPlaneB.constant = halfW - dPlane;
+    renderer.localClippingEnabled = true;
+    renderer.clippingPlanes = [secClipPlane, secClipPlaneB];
+  } else {
+    renderer.localClippingEnabled = false;
+  }
+  // the cut changed which points exist, so everything gated on pointShownP
+  // has to catch up. Volume rebuild is debounced; the offset drag is not.
+  refreshSpriteFilter();
+  if (typeof scheduleVolumeRebuild === 'function') scheduleVolumeRebuild(160);
+
+  const gridN = secPerLayer ? 130 : 190;
+  const groups = new Map();
+  const shown = secShownPoints();
+  if (secPerLayer) {
+    for (const p of shown) {
+      let a = groups.get(p.layer); if (!a) { a = []; groups.set(p.layer, a); }
+      a.push(p);
+    }
+  } else {
+    groups.set('__all__', shown);
+  }
+
+  secLastPaths = [];
+  let total = 0;
+  for (const [lab, pts] of groups) {
+    const r = secComputePaths(pts, sigma, secLevelF, gridN);
+    if (!r.paths.length) continue;
+    const col = (lab === '__all__') ? '#ff5a3c' : layerColorHex(lab);
+    secLastPaths.push({ lab, color: col, paths: r.paths });
+    total += r.paths.length;
+    const verts = [];
+    for (const pl of r.paths) {
+      for (let i = 0; i + 1 < pl.length; i++) {
+        for (const k of [i, i + 1]) {
+          const q = O.clone()
+            .addScaledVector(U, pl[k][0])
+            .addScaledVector(V, pl[k][1])
+            .addScaledVector(N, eps);
+          verts.push(q.x, q.y, q.z);
+        }
+      }
+    }
+    if (!verts.length) continue;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    const m = new THREE.LineBasicMaterial({ color: new THREE.Color(col),
+                                            clippingPlanes: [], depthTest: true });
+    secGroup.add(new THREE.LineSegments(g, m));
+  }
+
+  if (secShowPlane) {
+    const b = secBox();
+    const half = b.getSize(new THREE.Vector3()).length() * 0.5;
+    const quad = new THREE.PlaneGeometry(half * 1.2, half * 1.2);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x4a90d9, transparent: true, opacity: 0.07,
+      side: THREE.DoubleSide, depthWrite: false, clippingPlanes: [],
+    });
+    const mesh = new THREE.Mesh(quad, mat);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), N);
+    mesh.position.copy(O).addScaledVector(N, eps);
+    secGroup.add(mesh);
+    const edge = new THREE.LineSegments(
+      new THREE.EdgesGeometry(quad),
+      new THREE.LineBasicMaterial({ color: 0x4a90d9, transparent: true,
+                                    opacity: 0.5, clippingPlanes: [] }));
+    edge.quaternion.copy(mesh.quaternion);
+    edge.position.copy(mesh.position);
+    secGroup.add(edge);
+  }
+
+  const st = document.getElementById('secStatus');
+  if (st) st.textContent = `${total} curve${total === 1 ? '' : 's'} at ` +
+    `${secAxis.toUpperCase()}${secSign > 0 ? '+' : '-'} ` +
+    `${secOffsetT.toFixed(2)} | ${shown.length} pts shown`;
+  markOverlayDirty();
+}
+
+let _secTimer = null;
+function secSchedule(ms) {
+  if (_secTimer) clearTimeout(_secTimer);
+  _secTimer = setTimeout(() => { _secTimer = null; secRebuild(); }, ms === undefined ? 60 : ms);
+}
+
+function secExportSVG() {
+  if (!secLastPaths || !secLastPaths.length) { alert('No section curves to export.'); return; }
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  for (const g of secLastPaths) for (const pl of g.paths) for (const q of pl) {
+    if (q[0] < u0) u0 = q[0]; if (q[0] > u1) u1 = q[0];
+    if (q[1] < v0) v0 = q[1]; if (q[1] > v1) v1 = q[1];
+  }
+  const pad = Math.max(u1 - u0, v1 - v0) * 0.04;
+  u0 -= pad; u1 += pad; v0 -= pad; v1 += pad;
+  const W = 1000, H = Math.max(1, Math.round(W * (v1 - v0) / (u1 - u0)));
+  const sx = W / (u1 - u0);
+  const X = (u) => ((u - u0) * sx).toFixed(2);
+  const Y = (v) => (H - (v - v0) * sx).toFixed(2);   // flip: +v up, like a drawing
+  const out = [];
+  out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
+  out.push(`<!-- section through the latent cloud. axis=${secAxis}${secSign > 0 ? '+' : '-'} ` +
+           `offset=${secOffsetT.toFixed(3)} reach=${secReachF} level=${secLevelF} ` +
+           `plane units per px = ${(1 / sx).toFixed(6)} -->`);
+  out.push(`<rect width="${W}" height="${H}" fill="#ffffff"/>`);
+  for (const g of secLastPaths) {
+    out.push(`<g id="${String(g.lab).replace(/[^A-Za-z0-9_-]/g, '_')}" fill="none" ` +
+             `stroke="${g.color}" stroke-width="1.2">`);
+    for (const pl of g.paths) {
+      if (pl.length < 2) continue;
+      let d = 'M ' + X(pl[0][0]) + ' ' + Y(pl[0][1]);
+      for (let i = 1; i < pl.length; i++) d += ' L ' + X(pl[i][0]) + ' ' + Y(pl[i][1]);
+      out.push(`<path d="${d}"/>`);
+    }
+    out.push('</g>');
+  }
+  out.push('</svg>');
+  const blob = new Blob([out.join('\n')], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  a.download = `latent_section_${secAxis}${secSign > 0 ? 'p' : 'm'}_` +
+               `${secOffsetT.toFixed(3)}_${ts}.svg`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function secMarkAxis() {
+  document.querySelectorAll('#secAxis button[data-ax]').forEach((b) => {
+    b.classList.toggle('act', b.dataset.ax === secAxis);
+  });
+}
+(function wireSection() {
+  const on = document.getElementById('secOn');
+  const panel = document.getElementById('secPanel');
+  on.addEventListener('change', (e) => {
+    secOn = e.target.checked;
+    panel.classList.toggle('on', secOn);
+    secRebuild();
+  });
+  document.querySelectorAll('#secAxis button[data-ax]').forEach((b) => {
+    b.addEventListener('click', () => { secAxis = b.dataset.ax; secMarkAxis(); secRebuild(); });
+  });
+  document.getElementById('secFlip').addEventListener('click', () => {
+    secSign = -secSign; secRebuild();
+  });
+  const bind = (id, valId, set, fixed) => {
+    const el = document.getElementById(id);
+    el.addEventListener('input', (e) => {
+      const v = parseFloat(e.target.value);
+      set(v);
+      const lab = document.getElementById(valId);
+      if (lab) lab.textContent = v.toFixed(fixed);
+      secSchedule();
+    });
+  };
+  bind('secOffset', 'secOffsetValue', (v) => { secOffsetT = v; }, 2);
+  bind('secReach',  'secReachValue',  (v) => { secReachF = v; }, 2);
+  bind('secLevel',  'secLevelValue',  (v) => { secLevelF = v; }, 2);
+  document.getElementById('secCut').addEventListener('change', (e) => {
+    secCutMode = e.target.value; secRebuild();
+  });
+  document.getElementById('secSlab').addEventListener('input', (e) => {
+    secSlabF = parseFloat(e.target.value);
+    const l = document.getElementById('secSlabValue');
+    if (l) l.textContent = secSlabF.toFixed(2);
+    secSchedule();
+  });
+  document.getElementById('secShowPlane').addEventListener('change', (e) => {
+    secShowPlane = e.target.checked; secRebuild();
+  });
+  document.getElementById('secPerLayer').addEventListener('change', (e) => {
+    secPerLayer = e.target.checked; secRebuild();
+  });
+  document.getElementById('secExport').addEventListener('click', secExportSVG);
+  secMarkAxis();
+})();
 
 // Resize handling
 window.addEventListener('resize', () => {
