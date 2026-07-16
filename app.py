@@ -7368,6 +7368,194 @@ document.getElementById('halluQueuePath').addEventListener('click', async () => 
 });
 
 
+// ===========================================================================
+// View lock
+//
+// Switching Arrangement reruns the Streamlit script and rebuilds this iframe.
+// Controls revert to their defaults and the camera reframes to the new cloud's
+// centroid and radius, so nothing survives the switch and the two maps cannot
+// be read against each other.
+//
+// State is written to localStorage on change and restored on load. The camera
+// is normalized against the cloud's own centroid and radius, so it transfers
+// between layouts whose coordinate scales differ. POINTS and the projections
+// are untouched.
+// ===========================================================================
+const VIEWLOCK_KEY = 'aao_viewlock_v1';
+let _vlRestoring = false;
+let _vlTimer = null;
+
+function _vlControls() {
+  const out = {};
+  const ov = document.getElementById('overlay');
+  if (!ov) return out;
+  ov.querySelectorAll('input[id], select[id]').forEach(el => {
+    if (el.id === 'camOut') return;            // readonly display field
+    if (el.id.indexOf('vl') === 0) return;     // this panel's own controls
+    out[el.id] = (el.type === 'checkbox') ? el.checked : el.value;
+  });
+  const rm = ov.querySelector('input[name="renderMode"]:checked');
+  if (rm) out.__renderMode = rm.value;
+  out.__layerHidden = Array.from(layerHidden);
+  out.__categoryHidden = Array.from(categoryHidden);
+  return out;
+}
+
+function _vlCamera() {
+  const off = camera.position.clone().sub(controls.target);
+  const r = off.length();
+  if (r < 1e-9) return null;
+  return {
+    elev: Math.asin(Math.max(-1, Math.min(1, off.y / r))) * 180 / Math.PI,
+    azim: Math.atan2(off.x, off.z) * 180 / Math.PI,
+    distRatio: r / radius,
+    tgt: [(controls.target.x - cx) / radius,
+          (controls.target.y - cy) / radius,
+          (controls.target.z - cz) / radius],
+    fov: camera.fov,
+  };
+}
+
+function _vlApplyCamera(c) {
+  if (!c) return;
+  controls.target.set(cx + c.tgt[0] * radius,
+                      cy + c.tgt[1] * radius,
+                      cz + c.tgt[2] * radius);
+  const el = c.elev * Math.PI / 180;
+  const az = c.azim * Math.PI / 180;
+  const r = Math.max(1e-6, c.distRatio * radius);
+  const h = r * Math.cos(el);
+  camera.position.copy(controls.target).add(
+    new THREE.Vector3(h * Math.sin(az), r * Math.sin(el), h * Math.cos(az)));
+  if (c.fov) { camera.fov = c.fov; camera.updateProjectionMatrix(); }
+  controls.update();
+}
+
+function _vlApplyControls(saved) {
+  const ov = document.getElementById('overlay');
+  if (!ov || !saved) return;
+  for (const id of Object.keys(saved)) {
+    if (id.indexOf('__') === 0) continue;
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const val = saved[id];
+    if (el.type === 'checkbox') {
+      if (el.checked === val) continue;
+      el.checked = val;
+    } else {
+      if (el.value === String(val)) continue;
+      el.value = val;
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  if (saved.__renderMode) {
+    const rm = ov.querySelector('input[name="renderMode"][value="' + saved.__renderMode + '"]');
+    if (rm && !rm.checked) {
+      rm.checked = true;
+      rm.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+  // Layer and category toggles are rebuilt on every load from POINTS, so they
+  // are matched by label text rather than by index. Period and category names
+  // are the same across arrangements; only the coordinates differ.
+  const wantHidden = (sel, hidden) => {
+    const set = new Set(hidden || []);
+    document.querySelectorAll(sel + ' label').forEach(lab => {
+      const cb = lab.querySelector('input[type=checkbox]');
+      if (!cb) return;
+      const want = !set.has(lab.textContent.trim());
+      if (cb.checked !== want) {
+        cb.checked = want;
+        cb.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+  };
+  wantHidden('#layerToggles', saved.__layerHidden);
+  wantHidden('#categoryToggles', saved.__categoryHidden);
+}
+
+function _vlSave() {
+  if (_vlRestoring) return;
+  const box = document.getElementById('vlOn');
+  try {
+    localStorage.setItem(VIEWLOCK_KEY, JSON.stringify({
+      v: 1,
+      on: !!(box && box.checked),
+      controls: _vlControls(),
+      camera: _vlCamera(),
+    }));
+  } catch (e) {
+    // localStorage unavailable — the lock degrades to off rather than throwing
+  }
+}
+
+function _vlSaveSoon() {
+  if (_vlRestoring) return;
+  clearTimeout(_vlTimer);
+  _vlTimer = setTimeout(_vlSave, 250);
+}
+
+function _vlLoad() {
+  try {
+    const s = localStorage.getItem(VIEWLOCK_KEY);
+    return s ? JSON.parse(s) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+(function _vlInit() {
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+
+  const box = document.createElement('div');
+  box.className = 'row';
+  box.style.cssText = 'margin-bottom:5px;padding-bottom:4px;border-bottom:1px solid #444;';
+  box.innerHTML =
+    '<label style="cursor:pointer;" title="Hold the camera and every control below across an Arrangement change, so two maps can be read in the same frame. Stored per browser.">' +
+    '<input type="checkbox" id="vlOn"> lock view across arrangement</label>' +
+    '<button id="vlReset" style="font-size:10px;margin-left:8px;background:#1a1a1a;color:#ccc;border:1px solid #555;cursor:pointer;padding:1px 5px;">reset view</button>';
+  ov.insertBefore(box, ov.firstChild);
+
+  const onBox = document.getElementById('vlOn');
+  const saved = _vlLoad();
+  onBox.checked = !!(saved && saved.on);
+
+  if (saved && saved.on) {
+    _vlRestoring = true;
+    try {
+      _vlApplyControls(saved.controls);
+      _vlApplyCamera(saved.camera);
+    } catch (e) {
+      console.warn('view lock: restore failed', e);
+    } finally {
+      _vlRestoring = false;
+    }
+    try { redrawOverlay(); } catch (e) {}
+  }
+
+  onBox.addEventListener('change', _vlSave);
+
+  document.getElementById('vlReset').addEventListener('click', () => {
+    controls.target.set(cx, cy, cz);
+    camera.position.set(cx, cy + radius * 0.5, cz + radius * 2.5);
+    camera.fov = 45;
+    camera.updateProjectionMatrix();
+    controls.update();
+    _vlSave();
+    try { redrawOverlay(); } catch (e) {}
+  });
+
+  // Capture=true so controls built after this runs are covered too.
+  ov.addEventListener('change', _vlSaveSoon, true);
+  ov.addEventListener('input', _vlSaveSoon, true);
+  controls.addEventListener('end', _vlSaveSoon);
+  // Wheel zoom is handled outside OrbitControls, so 'end' does not fire for it.
+  renderer.domElement.addEventListener('wheel', _vlSaveSoon, { passive: true });
+})();
+
+
 </script>
 </body>
 </html>
