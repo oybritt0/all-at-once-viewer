@@ -338,13 +338,43 @@ def add_marker(svg, layer, shape, x, y, r, fill, stroke, sw, opacity,
 # Data loading
 # =============================================================================
 @st.cache_data(show_spinner="Loading manifest and features...")
-def load_data():
-    """Load manifest, features, 2D UMAP, and (compute if missing) 3D UMAP."""
+def load_data(space: str = "dino"):
+    """Load manifest, features, 2D UMAP, and (compute if missing) 3D UMAP.
+
+    space:
+      "dino"  DINOv2-base pooler_output. Self-supervised on images alone,
+              no language at any stage of training. This is the original
+              map. It lives in clip_features.npy despite the name: that is
+              a fossil from the Pavilion notebook, and re-embedding proves
+              the contents are DINOv2 (CLIP scores 0.0004 against it).
+      "clip"  CLIP ViT-L-14 image encoder. Trained to align images with web
+              text, so the arrangement carries the linguistic categories the
+              web uses to describe images. Built by build_clip_layout.py.
+
+    Same PCA(50) -> UMAP for both, so any difference between the two maps is
+    the difference between the two ways of seeing.
+    """
+    if space == "verbal":
+        # affinity to an authored attribute vocabulary, medium cancelled
+        # (build_verbal_layout.py). Arranged by what a member evokes rather
+        # than by whether it is a drawing, a photograph or a sculpture.
+        feat_path = EMBEDDINGS_DIR / "verbal_profile.npy"
+        l2d_path = EMBEDDINGS_DIR / "latent_2d_verbal.json"
+        umap3d_path = EMBEDDINGS_DIR / "verbal_umap_3d.npy"
+    elif space == "clip":
+        feat_path = EMBEDDINGS_DIR / "clip_vitl14_features.npy"
+        l2d_path = EMBEDDINGS_DIR / "latent_2d_clip.json"
+        umap3d_path = EMBEDDINGS_DIR / "clip_vitl14_umap_3d.npy"
+    else:
+        feat_path = EMBEDDINGS_DIR / "clip_features.npy"   # NB: holds DINOv2
+        l2d_path = EMBEDDINGS_DIR / "latent_2d.json"
+        umap3d_path = EMBEDDINGS_DIR / "clip_umap_3d.npy"
+
     missing = [p for p in [
         MANIFEST_PATH,
-        EMBEDDINGS_DIR / "clip_features.npy",
+        feat_path,
         EMBEDDINGS_DIR / "index.json",
-        EMBEDDINGS_DIR / "latent_2d.json",
+        l2d_path,
     ] if not p.exists()]
     if missing:
         return None, None, None, [str(p) for p in missing]
@@ -353,13 +383,13 @@ def load_data():
         manifest = json.load(f)
     manifest_df = pd.DataFrame(manifest)
 
-    features = np.load(EMBEDDINGS_DIR / "clip_features.npy")
+    features = np.load(feat_path)
     with open(EMBEDDINGS_DIR / "index.json") as f:
         feature_index = json.load(f)
     feature_ids = feature_index["ids"]
     success_mask = np.array(feature_index["success"], dtype=bool)
 
-    with open(EMBEDDINGS_DIR / "latent_2d.json") as f:
+    with open(l2d_path, encoding="utf-8") as f:
         latent_2d = json.load(f)
     latent_df = pd.DataFrame(latent_2d["entries"])
 
@@ -369,9 +399,9 @@ def load_data():
     df_valid = df[success_mask].reset_index(drop=True)
     valid_features = features[success_mask]
 
-    # 3D UMAP
-    umap_3d_path = EMBEDDINGS_DIR / "clip_umap_3d.npy"
-    if umap_3d_path.exists():
+    # 3D UMAP (per-space cache)
+    umap_3d_path = umap3d_path
+    if umap_3d_path.exists() and np.load(umap_3d_path).shape[0] == int(success_mask.sum()):
         embeddings_3d = np.load(umap_3d_path)
     else:
         from sklearn.decomposition import PCA
@@ -7347,7 +7377,40 @@ document.getElementById('halluQueuePath').addEventListener('click', async () => 
 # =============================================================================
 # App
 # =============================================================================
-df_valid, valid_features, embeddings_3d, missing = load_data()
+_clip_ready = ((EMBEDDINGS_DIR / "latent_2d_clip.json").exists()
+               and (EMBEDDINGS_DIR / "clip_vitl14_features.npy").exists())
+_verbal_ready = ((EMBEDDINGS_DIR / "latent_2d_verbal.json").exists()
+                 and (EMBEDDINGS_DIR / "verbal_profile.npy").exists())
+with st.sidebar:
+    _space_label = st.radio(
+        "Arrangement",
+        ["DINOv2 (non-verbal)",
+         "CLIP (linguistic)",
+         "Verbal attributes (medium cancelled)"],
+        index=0,
+        help=("DINOv2 is self-supervised on images alone, with no language at "
+              "any stage: this is the original map. CLIP was trained to align "
+              "images with web text, so its space carries the linguistic "
+              "categories the web uses to describe images. Same PCA/UMAP for "
+              "both, so the difference between the maps is the difference "
+              "between the two ways of seeing."),
+    )
+    if _space_label.startswith("CLIP"):
+        _space = "clip"
+    elif _space_label.startswith("Verbal"):
+        _space = "verbal"
+    else:
+        _space = "dino"
+    if _space == "clip" and not _clip_ready:
+        st.warning("CLIP layout not built yet. Run build_clip_layout.py, "
+                   "then reload. Showing DINOv2.")
+        _space = "dino"
+    if _space == "verbal" and not _verbal_ready:
+        st.warning("Verbal layout not built. Run build_verbal_layout.py. "
+                   "Showing DINOv2.")
+        _space = "dino"
+
+df_valid, valid_features, embeddings_3d, missing = load_data(_space)
 
 if missing:
     st.error("Required data files are missing. Run latent_embedding.ipynb first.")
