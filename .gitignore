@@ -32,3 +32,10 @@ desktop.ini
 # Logs / temp
 *.log
 *.tmp
+
+# Viewer data — distributed as a bundle, not tracked
+data/embeddings/
+data/catalog/
+data/exports/
+all-at-once-data-*.zip
+.publish-backup/
